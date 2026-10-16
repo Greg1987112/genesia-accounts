@@ -1182,7 +1182,7 @@
         <label class="field"><span>Total TTC</span><input type="number" step="0.01" name="total" required value="${esc(e.total ?? '')}"></label>
         <div class="field"><span>Facture (PDF / photo)</span>
           ${e.file_path ? `<div class="current-file">${fileLink(e.file_path, e.file_name || 'Facture')}<label class="check small"><input type="checkbox" name="remove_file"> retirer</label></div>` : ''}
-          <input type="file" name="file" accept="application/pdf,image/*" capture="environment"></div>
+          <input type="file" name="file" accept="application/pdf,image/*"></div>
         <datalist id="dl-companies">${[...new Set(S.expenses.map(x => x.company).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
       </form>`,
       footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
