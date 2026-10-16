@@ -1549,12 +1549,24 @@
   const TOKEN = new URLSearchParams(location.search).get('c');
   const IS_CLIENT = !!TOKEN;
 
+  // Installation sur l'écran d'accueil (PWA)
+  if (IS_CLIENT) {
+    // Le client garde SON lien (avec le code) s'il ajoute la page à son écran d'accueil
+    document.getElementById('app-manifest')?.remove();
+  } else if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
   (async () => {
     try {
       await api.init();
       if (IS_CLIENT) await runClient(TOKEN); else await runAdmin();
     } catch (e) {
-      $('#app').innerHTML = `<div class="center-screen"><div class="card narrow"><h2>Erreur</h2><p>${esc(errMsg(e))}</p></div></div>`;
+      const offline = !navigator.onLine || /Chargement impossible|Failed to fetch|NetworkError/i.test(errMsg(e));
+      $('#app').innerHTML = `<div class="center-screen"><div class="card narrow"><div class="brand-mark">${ICON.anchor}</div>
+        <h2>${offline ? 'Pas de connexion' : 'Erreur'}</h2>
+        <p class="muted">${offline ? 'Impossible de joindre le serveur. Vérifiez la connexion internet du bord (4G / Wi-Fi) puis réessayez. — No connection: please check your internet access and retry.' : esc(errMsg(e))}</p>
+        <button class="btn btn-primary btn-block" onclick="location.reload()">Réessayer / Retry</button></div></div>`;
     }
   })();
 })();
