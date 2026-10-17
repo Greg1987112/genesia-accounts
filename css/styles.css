@@ -367,3 +367,4 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
   body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
   .login-bg { padding-top: env(safe-area-inset-top); }
 }
+.tips-toggle { background: var(--gold-soft); border-radius: 10px; padding: 10px 12px; }

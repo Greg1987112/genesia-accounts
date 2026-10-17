@@ -126,6 +126,7 @@
   // ------------------------------------------------------------------
   //  Calculs métier
   // ------------------------------------------------------------------
+  const tipsEnabled = c => c.tips_prompt !== false;
   const ttcL = b => (toNum(b.price_ht_l) || 0) + (toNum(b.vat_l) || 0);
   const consumption = v => (toNum(v.rob_before) !== null && toNum(v.rob_after) !== null) ? v.rob_before - v.rob_after : null;
   const byPos = (a, b) => (a.position ?? 0) - (b.position ?? 0) || String(a.created_at || '').localeCompare(String(b.created_at || ''));
@@ -343,6 +344,7 @@
       if (!c) throw new Error('Lien invalide');
       if (c.status === 'signed') throw new Error('Ce charter est déjà signé');
       if (c.status !== 'closed') throw new Error('La compta n’est pas encore clôturée par le capitaine');
+      if (!tipsEnabled(c)) { tipsPct = null; tipsAmount = 0; }
       if (!(tipsAmount >= 0)) throw new Error('Montant de tips invalide');
       Object.assign(c, { tips_pct: tipsPct ?? null, tips_amount: r2(tipsAmount || 0), client_signature: signature,
         client_signed_name: name, client_signed_at: new Date().toISOString(), status: 'signed' });
@@ -733,7 +735,7 @@
     // Signature en 2 étapes : 1) tips  2) signature
     function openSign() {
       if (!B || B.charter.status !== 'closed') return;
-      const c = B.charter, cur = c.currency, fee = toNum(c.charter_fee);
+      const c = B.charter, cur = c.currency, fee = toNum(c.charter_fee), withTips = tipsEnabled(c);
       let choice = fee ? '10' : 'custom', customVal = '', customUnit = fee ? 'pct' : 'amt';
       const tipsNow = () => {
         if (choice !== 'custom') return { pct: +choice, amount: r2(fee * +choice / 100) };
@@ -788,21 +790,21 @@
         const st = computeStatement(B, { tipsAmount: tp.amount, tipsPct: tp.pct });
         const m = openModal({
           title: t('signTitle'), wide: true,
-          body: `<p class="step-label">${t('step')} 2 / 2</p>
-            <div class="sign-summary three">
-              <div><span>${t('tipsChosen')}</span><b>${money(tp.amount, cur)}</b></div>
+          body: `${withTips ? `<p class="step-label">${t('step')} 2 / 2</p>` : ''}
+            <div class="sign-summary ${withTips ? 'three' : ''}">
+              ${withTips ? `<div><span>${t('tipsChosen')}</span><b>${money(tp.amount, cur)}</b></div>` : ''}
               <div><span>${t('totalToSign')}</span><b>${money(st.total, cur)}</b></div>
               <div><span>${t('apaBalance')}</span><b class="${st.balance < 0 ? 'neg' : ''}">${money(st.balance, cur)}</b></div></div>
             <label class="field"><span>${t('yourName')}</span><input name="name" autocomplete="name" required></label>
             <div class="field"><span>${t('signHere')}</span><canvas class="sig-pad" aria-label="${t('signHere')}"></canvas>
               <button type="button" class="btn btn-ghost btn-sm" data-clear>${t('clear')}</button></div>
             <label class="check"><input type="checkbox" name="approve"> <span>${t('approve')} (${money(st.total, cur)}).</span></label>`,
-          footer: `<button class="btn btn-ghost mr-auto" data-back>${ICON.back}${t('back')}</button>
+          footer: `${withTips ? `<button class="btn btn-ghost mr-auto" data-back>${ICON.back}${t('back')}</button>` : ''}
             <button class="btn btn-ghost" data-close>${t('cancel')}</button><button class="btn btn-gold" data-ok>${ICON.pen}${t('sign')}</button>`,
         });
         const pad = signaturePad($('.sig-pad', m));
         $('[data-clear]', m).onclick = () => pad.clear();
-        $('[data-back]', m).onclick = () => stepTips();
+        if (withTips) $('[data-back]', m).onclick = () => stepTips();
         $('[data-ok]', m).onclick = async ev => {
           const name = $('[name=name]', m).value.trim();
           if (!name) return toast(t('nameNeeded'), 'err');
@@ -813,7 +815,7 @@
           catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
         };
       }
-      stepTips();
+      if (withTips) stepTips(); else stepSign({ pct: null, amount: 0 });
     }
 
     $('#app').addEventListener('click', e => {
@@ -949,6 +951,8 @@
         <label class="field"><span>Fin</span><input type="date" name="end_date" value="${esc(c.end_date || '')}"></label>
         <label class="field"><span>APA reçu</span><input type="number" step="0.01" name="apa_paid" value="${esc(c.apa_paid ?? '')}"></label>
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
+        <label class="check span-2 tips-toggle"><input type="checkbox" name="tips_prompt" ${tipsEnabled(c) ? 'checked' : ''}>
+          <span><b>Proposer les tips au client avant sa signature</b><br><small class="muted">Fenêtre 10 % / 15 % / 20 % du charter fee ou montant libre. Décochez si vous préférez ne pas aborder les tips dans l’app.</small></span></label>
         <label class="field"><span>Devise</span><select name="currency">${opt(['EUR', 'USD', 'GBP', 'CHF'], c.currency || CFG.currency || 'EUR')}</select></label>
         <div class="field-sep span-2">Ligne fuel (calculée automatiquement)</div>
         <label class="field"><span>Société</span><input name="fuel_company" value="${esc(c.fuel_company ?? 'TDB')}"></label>
@@ -965,7 +969,7 @@
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
-        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null };
+        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt };
       busy(ev.currentTarget, true);
       try {
         const saved = isNew ? await api.insert('charters', row) : await api.update('charters', c.id, row);
@@ -985,7 +989,10 @@
       } catch (e) { toast(errMsg(e), 'err'); }
     };
   }
-  ACTIONS['new-charter'] = () => charterForm();
+  ACTIONS['new-charter'] = () => {
+    const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
+    charterForm({ tips_prompt: last ? tipsEnabled(last) : true });
+  };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
   // ---------------- Détail d'un charter ----------------
@@ -1017,7 +1024,7 @@
         Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button></div></div>`
       : closed ? `<div class="banner banner-gold">${ICON.lock}<div><strong>Compta clôturée le ${fdatetime(c.closed_at)}</strong> — en attente de la signature du client.
         Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button></div></div>`
-      : !c.charter_fee ? `<div class="banner banner-info">${ICON.edit}<div>Renseignez le <b>charter fee</b> (bouton Modifier) : il sert au calcul des tips proposés au client lors de la signature.</div></div>` : ''}
+      : !c.charter_fee && tipsEnabled(c) ? `<div class="banner banner-info">${ICON.edit}<div>Renseignez le <b>charter fee</b> (bouton Modifier) : il sert au calcul des tips proposés au client lors de la signature.</div></div>` : ''}
       ${renderKpis(B, st)}
       <section class="panel">
         <div class="panel-head"><h2>Dépenses</h2>${!locked ? `<button class="btn btn-primary btn-sm" data-act="new-expense">${ICON.plus}Ajouter une dépense</button>` : ''}</div>
@@ -1054,7 +1061,7 @@
         </div>
         <div class="row-gap center no-print">
           <button class="btn btn-ghost" data-act="master-sign">${ICON.pen}${c.master_signature ? 'Re-signer (capitaine)' : 'Signer (capitaine)'}</button>
-          ${!locked ? `<span class="muted small">Le client pourra signer (et choisir ses tips) une fois la compta clôturée.</span>` : ''}
+          ${!locked ? `<span class="muted small">Le client pourra signer${tipsEnabled(c) ? ' (et choisir ses tips)' : ''} une fois la compta clôturée.</span>` : ''}
         </div>
       </section>`);
   }
@@ -1109,11 +1116,11 @@
   ACTIONS['close-charter'] = async b => {
     const c = charterById(b.dataset.id), st = computeStatement(buildBundle(S, c));
     const warn = [];
-    if (!c.charter_fee) warn.push('Le <b>charter fee</b> n’est pas renseigné : le client ne pourra saisir qu’un montant de tips personnalisé.');
+    if (tipsEnabled(c) && !c.charter_fee) warn.push('Le <b>charter fee</b> n’est pas renseigné : le client ne pourra saisir qu’un montant de tips personnalisé.');
     if (!S.voyages.some(v => v.charter_id === c.id)) warn.push('Aucun voyage fuel n’est lié à ce charter : aucun fuel ne sera facturé.');
     const ok = await confirmDialog(`Clôturer la compta de « ${esc(c.title)} » ?<br><br>
       Total : <b>${money(st.total, c.currency)}</b> · Solde APA : <b>${money(st.balance, c.currency)}</b><br><br>
-      Les dépenses seront verrouillées et le client pourra signer (en choisissant ses tips).
+      Les dépenses seront verrouillées et le client pourra signer${tipsEnabled(c) ? ' (en choisissant ses tips)' : ' (sans fenêtre de tips)'}.
       ${warn.length ? `<br><br><span class="warn">⚠ ${warn.join('<br>⚠ ')}</span>` : ''}`, 'Clôturer', false);
     if (!ok) return;
     try {
