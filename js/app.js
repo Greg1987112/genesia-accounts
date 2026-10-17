@@ -12,6 +12,7 @@
   const DEMO = !CFG.supabaseUrl || /VOTRE/i.test(CFG.supabaseUrl) || !CFG.supabaseAnonKey || /VOTRE/i.test(CFG.supabaseAnonKey);
   const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
   const XLSX_JS = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  const JSZIP_JS = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
   const YACHT = CFG.yachtName || 'Motor Yacht';
 
   const METHODS = ['Credit Card APA', 'Bank Transfer from APA', 'Cash APA', 'ATM Fee', 'Bank Fee',
@@ -88,7 +89,8 @@
       tipsCustomHint: 'Saisissez un pourcentage ou un montant', percent: '%', amountUnit: 'Montant',
       continue: 'Continuer', back: 'Retour', tipsLine: 'Tips équipage', ofCharterFee: 'du charter fee',
       tipsChosen: 'Tips', totalToSign: 'Total à approuver', charterFee: 'Charter fee', tipsInvalid: 'Montant de tips invalide.',
-      step: 'Étape',
+      step: 'Étape', reportTitle: 'Rapport de charter', zipAll: 'Toutes les factures (.zip)',
+      reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
     },
     en: {
       apaReceived: 'APA received', totalExpenses: 'Total expenses', apaBalance: 'APA balance',
@@ -118,7 +120,8 @@
       tipsCustomHint: 'Enter a percentage or an amount', percent: '%', amountUnit: 'Amount',
       continue: 'Continue', back: 'Back', tipsLine: 'Crew gratuity', ofCharterFee: 'of the charter fee',
       tipsChosen: 'Gratuity', totalToSign: 'Total to approve', charterFee: 'Charter fee', tipsInvalid: 'Invalid gratuity amount.',
-      step: 'Step',
+      step: 'Step', reportTitle: 'Charter report', zipAll: 'All invoices (.zip)',
+      reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
     },
   };
   const t = k => (I18N[LANG] && I18N[LANG][k]) || I18N.fr[k] || k;
@@ -259,6 +262,10 @@
       const { data, error } = await this.sb.rpc('client_view', { p_token: token });
       if (error) throw error; return data;
     }
+    async reportView(token) {
+      const { data, error } = await this.sb.rpc('report_view', { p_token: token });
+      if (error) throw error; return data;
+    }
     async clientSign(token, name, signature, tipsPct, tipsAmount) {
       const { data, error } = await this.sb.rpc('client_sign', { p_token: token, p_name: name, p_signature: signature,
         p_tips_pct: tipsPct ?? null, p_tips_amount: tipsAmount || 0 });
@@ -286,6 +293,7 @@
       const saved = store.get(this.KEY);
       this.S = saved ? JSON.parse(saved) : JSON.parse(JSON.stringify(window.DEMO_DATA || {}));
       TABLES.forEach(tb => { this.S[tb] = this.S[tb] || []; });
+      this.S.charters.forEach(c => { if (!c.report_token) c.report_token = 'demo-report-' + c.id; });
       window.addEventListener('storage', e => { if (e.key === this.KEY && e.newValue) { this.S = JSON.parse(e.newValue); this._cbs?.forEach(cb => cb()); } });
     }
     save() { store.set(this.KEY, JSON.stringify(this.S)); }
@@ -303,7 +311,7 @@
     }
     async insert(table, row) {
       const r = { id: uuid(), created_at: new Date().toISOString(), ...row };
-      if (table === 'charters') r.client_token = r.client_token || uuid();
+      if (table === 'charters') { r.client_token = r.client_token || uuid(); r.report_token = r.report_token || uuid(); }
       if (table === 'charters') r.status = r.status || 'open';
       this._checkLock(table, r);
       this.S[table].push(r); this.save(); return r;
@@ -336,8 +344,12 @@
       const c = this.S.charters.find(x => x.client_token === token);
       if (!c) return null;
       const B = buildBundle(this.S, c);
-      const { client_token, notes, signed_snapshot, ...pub } = c; // eslint-disable-line no-unused-vars
+      const { client_token, notes, signed_snapshot, report_token, report_to, report_cc, ...pub } = c; // eslint-disable-line no-unused-vars
       return { ...B, charter: pub };
+    }
+    async reportView(token) {
+      const c = this.S.charters.find(x => x.report_token === token && x.status === 'signed');
+      return c ? this.clientView(c.client_token) : null;
     }
     async clientSign(token, name, signature, tipsPct, tipsAmount) {
       const c = this.S.charters.find(x => x.client_token === token);
@@ -590,8 +602,8 @@
   // ------------------------------------------------------------------
   //  Export Excel
   // ------------------------------------------------------------------
-  async function exportCharterXlsx(B) {
-    try { await loadScript(XLSX_JS); } catch (e) { toast(errMsg(e), 'err'); return; }
+  async function exportCharterXlsx(B, asArray = false) {
+    try { await loadScript(XLSX_JS); } catch (e) { toast(errMsg(e), 'err'); return null; }
     const st = computeStatement(B), c = B.charter;
     const rows = [[c.yacht || YACHT], [c.title], [c.client_name ? `Client : ${c.client_name}` : ''],
       [`${fdate(c.start_date)} → ${fdate(c.end_date)}`], [],
@@ -612,7 +624,40 @@
     ws['!cols'] = [{ wch: 8 }, { wch: 11 }, { wch: 22 }, { wch: 16 }, { wch: 14 }, { wch: 40 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 22 }];
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, 'Accounting');
-    window.XLSX.writeFile(wb, `${(c.title || 'charter').replace(/[^\w\-]+/g, '_')}.xlsx`);
+    if (asArray) return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+    window.XLSX.writeFile(wb, `${safeName(c.title || 'charter')}.xlsx`);
+    return null;
+  }
+
+  const safeName = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w\-. ]+/g, '_').replace(/\s+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 80);
+
+  // Rapport complet en .zip : Excel de la compta + toutes les factures (dépenses + soutages du charter)
+  async function downloadReportZip(B, btn) {
+    busy(btn, true);
+    try {
+      await loadScript(JSZIP_JS);
+      const zip = new window.JSZip(), c = B.charter, st = computeStatement(B);
+      const xlsx = await exportCharterXlsx(B, true);
+      if (xlsx) zip.file(`${safeName(c.title)}.xlsx`, xlsx);
+      const items = [];
+      B.expenses.filter(e => e.file_path).forEach(e => items.push({ path: e.file_path,
+        name: `Factures/${String(e.num ?? '').padStart(2, '0')}_${safeName(e.company || 'facture')}_${safeName(e.file_name || e.file_path.split('/').pop())}` }));
+      const seen = new Set();
+      st.fuelLines.filter(f => f.file_path && !seen.has(f.file_path) && seen.add(f.file_path)).forEach(f => items.push({ path: f.file_path,
+        name: `Fuel/Soutage_${f.bunker_num ?? ''}_${safeName(f.file_name || f.file_path.split('/').pop())}` }));
+      let missing = 0;
+      for (const it of items) {
+        try { const url = api.fileUrl(it.path); const r = await fetch(url); if (!r.ok) throw 0; zip.file(it.name, await r.blob()); }
+        catch { missing++; }
+      }
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = `${safeName(c.title)}_rapport.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      if (missing) toast(`${missing} facture(s) n’ont pas pu être ajoutées`, 'err');
+    } catch (e) { toast(errMsg(e), 'err'); }
+    finally { busy(btn, false); }
   }
 
   async function exportFuelXlsx(S) {
@@ -639,7 +684,8 @@
   // ==================================================================
   //  VUE CLIENT (lien secret ?c=…)
   // ==================================================================
-  async function runClient(token) {
+  async function runClient(token, mode = 'client') {
+    const REPORT = mode === 'report';
     LANG = store.get('ca-lang') || ((navigator.language || 'en').toLowerCase().startsWith('fr') ? 'fr' : 'en');
     document.documentElement.lang = LANG;
     let B = null, lastAt = null, inflight = false, prevStatus = null;
@@ -647,9 +693,9 @@
     async function refresh() {
       if (inflight) return; inflight = true;
       try {
-        B = await api.clientView(token); lastAt = new Date();
+        B = REPORT ? await api.reportView(token) : await api.clientView(token); lastAt = new Date();
         if (!$('#modal-root').innerHTML) render();
-        maybeAnnounceClosed();
+        if (!REPORT) maybeAnnounceClosed();
       } catch (e) { if (!B) renderError(errMsg(e)); }
       finally { inflight = false; }
     }
@@ -681,7 +727,7 @@
     }
 
     function render() {
-      if (!B) return renderError(t('invalidLinkHelp'));
+      if (!B) return renderError(REPORT ? t('reportUnavailable') : t('invalidLinkHelp'));
       const c = B.charter, st = computeStatement(B), signed = c.status === 'signed', closed = c.status === 'closed';
       document.title = `${c.title} — ${c.yacht || YACHT}`;
       $('#app').innerHTML = `
@@ -696,12 +742,13 @@
       </header>
       <main class="container">
         <section class="hero">
-          <div class="eyebrow">${t('statement')}</div>
+          <div class="eyebrow">${REPORT ? t('reportTitle') : t('statement')}</div>
           <h1>${esc(c.title)}</h1>
           <p class="muted">${esc(c.client_name || '')}${c.client_name ? ' · ' : ''}${fdate(c.start_date)} → ${fdate(c.end_date)}</p>
           <div class="hero-actions no-print">
             <button class="btn btn-ghost" data-act="print">${ICON.print}${t('print')}</button>
             <button class="btn btn-ghost" data-act="xlsx">${ICON.sheet}${t('excel')}</button>
+            ${REPORT || signed ? `<button class="btn btn-ghost" data-act="zip">${ICON.file}${t('zipAll')}</button>` : ''}
             ${closed ? `<button class="btn btn-gold" data-act="sign">${ICON.pen}${t('signCta')}</button>` : ''}
           </div>
         </section>
@@ -823,10 +870,12 @@
       if (b.dataset.lang) { LANG = b.dataset.lang; store.set('ca-lang', LANG); document.documentElement.lang = LANG; render(); return; }
       if (b.dataset.act === 'print') window.print();
       if (b.dataset.act === 'xlsx') exportCharterXlsx(B);
+      if (b.dataset.act === 'zip') downloadReportZip(B, b);
       if (b.dataset.act === 'sign') openSign();
     });
 
     await refresh();
+    if (REPORT) return;
     api.subscribe(token, () => refresh());
     setInterval(() => { if (!document.hidden && !$('#modal-root').innerHTML) refresh(); }, 30000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) { if (B) document.title = `${B.charter.title} — ${B.charter.yacht || YACHT}`; refresh(); } });
@@ -958,6 +1007,9 @@
         <label class="field"><span>Société</span><input name="fuel_company" value="${esc(c.fuel_company ?? 'TDB')}"></label>
         <label class="field"><span>Description</span><input name="fuel_description" value="${esc(c.fuel_description ?? 'MEs & DGs')}"></label>
         <label class="field"><span>Paiement</span><select name="fuel_method">${opt(METHODS, c.fuel_method || 'To be paid')}</select></label>
+        <div class="field-sep span-2">Envoi du rapport final (après signature)</div>
+        <label class="field"><span>E-mail du représentant fiscal <small>(destinataire)</small></span><input name="report_to" value="${esc(c.report_to || '')}" placeholder="fiscal@exemple.com" inputmode="email"></label>
+        <label class="field"><span>E-mails des brokers <small>(en copie, séparés par une virgule)</small></span><input name="report_cc" value="${esc(c.report_cc || '')}" placeholder="broker1@…, broker2@…" inputmode="email"></label>
         <label class="field span-2"><span>Notes internes <small>(non visibles par le client)</small></span><textarea name="notes" rows="2">${esc(c.notes || '')}</textarea></label>
       </form>`,
       footer: `${!isNew ? `<button class="btn btn-ghost danger mr-auto" data-del>${ICON.trash}Supprimer</button>` : ''}
@@ -969,7 +1021,10 @@
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
-        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt };
+        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt,
+        report_to: cleanEmails(d.report_to) || null, report_cc: cleanEmails(d.report_cc) || null };
+      const bad = [...splitEmails(d.report_to), ...splitEmails(d.report_cc)].filter(x => !EMAIL_RE.test(x));
+      if (bad.length) return toast('E-mail invalide : ' + bad.join(', '), 'err');
       busy(ev.currentTarget, true);
       try {
         const saved = isNew ? await api.insert('charters', row) : await api.update('charters', c.id, row);
@@ -991,7 +1046,7 @@
   }
   ACTIONS['new-charter'] = () => {
     const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
-    charterForm({ tips_prompt: last ? tipsEnabled(last) : true });
+    charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '' });
   };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
@@ -1013,15 +1068,19 @@
         <div class="head-actions">
           ${!locked ? `<button class="btn btn-gold" data-act="close-charter" data-id="${c.id}">${ICON.lock}Clôturer la compta</button>` : ''}
           ${closed ? `<button class="btn btn-gold" data-act="notify-closed" data-id="${c.id}">${ICON.mail}Prévenir le client</button>` : ''}
+          ${signed ? `<button class="btn btn-gold" data-act="send-report" data-id="${c.id}">${ICON.mail}Envoyer le rapport</button>` : ''}
           <button class="btn btn-ghost" data-act="share" data-id="${c.id}">${ICON.share}Partager</button>
           <a class="btn btn-ghost" href="${esc(clientUrl(c))}" target="_blank" rel="noopener">${ICON.eye}Vue client</a>
           <button class="btn btn-ghost" data-act="print">${ICON.print}PDF</button>
           <button class="btn btn-ghost" data-act="xlsx-charter">${ICON.sheet}Excel</button>
+          <button class="btn btn-ghost" data-act="zip-charter">${ICON.file}Factures (.zip)</button>
           <button class="btn btn-ghost" data-act="edit-charter" data-id="${c.id}">${ICON.edit}Modifier</button>
         </div>
       </div>
       ${signed ? `<div class="banner banner-ok">${ICON.check}<div><strong>Comptabilité signée par ${esc(c.client_signed_name)}</strong> le ${fdatetime(c.client_signed_at)}${st.tipsAuto ? ` — tips choisis : <b>${money(st.tipsAuto, c.currency)}</b>${c.tips_pct != null ? ` (${fmt(c.tips_pct, c.tips_pct % 1 ? 2 : 0)} % du charter fee)` : ''}` : ''}.
-        Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button></div></div>`
+        Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button>
+        <br>${c.report_sent_at ? `Rapport envoyé le ${fdatetime(c.report_sent_at)}${c.report_to ? ` à ${esc(c.report_to)}` : ''}. <button class="link-btn" data-act="send-report" data-id="${c.id}">Renvoyer</button>`
+          : `<b>Prochaine étape :</b> <button class="link-btn" data-act="send-report" data-id="${c.id}">envoyer le rapport</button> au représentant fiscal${c.report_cc ? ' et aux brokers' : ''}.`}</div></div>`
       : closed ? `<div class="banner banner-gold">${ICON.lock}<div><strong>Compta clôturée le ${fdatetime(c.closed_at)}</strong> — en attente de la signature du client.
         Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button></div></div>`
       : !c.charter_fee && tipsEnabled(c) ? `<div class="banner banner-info">${ICON.edit}<div>Renseignez le <b>charter fee</b> (bouton Modifier) : il sert au calcul des tips proposés au client lors de la signature.</div></div>` : ''}
@@ -1067,7 +1126,13 @@
   }
 
   ACTIONS.print = () => window.print();
+  ACTIONS['zip-charter'] = b => downloadReportZip(buildBundle(S, charterById(CURRENT)), b);
   ACTIONS['xlsx-charter'] = () => { const c = charterById(CURRENT); exportCharterXlsx(buildBundle(S, c)); };
+
+  const EMAIL_RE = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/;
+  const splitEmails = s => String(s || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+  const cleanEmails = s => splitEmails(s).join(', ');
+  const reportUrl = c => `${location.origin}${location.pathname}?r=${c.report_token}`;
 
   function statusBadge(c) {
     if (c.status === 'signed') return '<span class="badge badge-ok">Signée</span>';
@@ -1113,6 +1178,73 @@
   ACTIONS.share = b => messageModal(charterById(b.dataset.id), 'share');
   ACTIONS['notify-closed'] = b => messageModal(charterById(b.dataset.id), 'closed');
 
+  // Envoi du rapport final au représentant fiscal (+ brokers en copie) — uniquement si signé
+  ACTIONS['send-report'] = b => {
+    const c = charterById(b.dataset.id);
+    if (c.status !== 'signed') return toast('Le rapport ne peut être envoyé qu’une fois la compta clôturée et signée.', 'err');
+    const B = buildBundle(S, c), st = computeStatement(B), cur = c.currency, url = reportUrl(c), yacht = c.yacht || YACHT;
+    const nFiles = B.expenses.filter(e => e.file_path).length + new Set(st.fuelLines.filter(f => f.file_path).map(f => f.file_path)).size;
+    const subject = `${yacht} — ${c.title} — Rapport de charter signé`;
+    const body = `Bonjour,
+
+Veuillez trouver ci-dessous le rapport complet du charter « ${c.title} » (${fdate(c.start_date)} → ${fdate(c.end_date)}) à bord de ${yacht}, clôturé et signé par le client${c.client_signed_name ? ` (${c.client_signed_name})` : ''} le ${fdatetime(c.client_signed_at)}.
+
+• APA reçu : ${money(st.apa, cur)}
+• Total des dépenses : ${money(st.total, cur)}${st.fuelTotal ? `\n  dont fuel : ${money(st.fuelTotal, cur)} (${fmt(st.fuelLiters)} L)` : ''}${st.tipsAuto ? `\n  dont tips équipage : ${money(st.tipsAuto, cur)}` : ''}
+• Solde APA : ${money(st.balance, cur)} (${st.balance >= 0 ? 'à rembourser au client' : 'à régler par le client'})
+
+Rapport complet (compta signée, détail fuel et ${nFiles} facture(s) téléchargeables, export Excel et PDF) :
+${url}
+
+Bien cordialement,
+${c.master_signed_name || 'Le Capitaine'}
+${yacht}`;
+    const m = openModal({
+      title: 'Envoyer le rapport', wide: true,
+      body: `<p class="muted">Le rapport est accessible uniquement par ce lien, et seulement parce que la compta est signée. Votre messagerie s’ouvre avec le message prêt : il ne vous reste qu’à appuyer sur Envoyer.</p>
+        <div class="form-grid">
+          <label class="field"><span>À : représentant fiscal</span><input id="rp-to" value="${esc(c.report_to || '')}" inputmode="email" placeholder="fiscal@exemple.com"></label>
+          <label class="field"><span>Cc : brokers</span><input id="rp-cc" value="${esc(c.report_cc || '')}" inputmode="email" placeholder="broker1@…, broker2@…"></label>
+          <label class="field span-2"><span>Objet</span><input id="rp-subject" value="${esc(subject)}"></label>
+          <label class="field span-2"><span>Message</span><textarea id="rp-body" rows="12">${esc(body)}</textarea></label>
+        </div>
+        <div class="row-gap wrap">
+          <button class="btn btn-gold" data-send>${ICON.mail}Ouvrir dans ma messagerie</button>
+          <button class="btn btn-ghost" data-copy>${ICON.copy}Copier le message</button>
+          <button class="btn btn-ghost" data-zip>${ICON.file}Télécharger le rapport (.zip)</button>
+          <a class="btn btn-ghost" href="${esc(url)}" target="_blank" rel="noopener">${ICON.eye}Voir le rapport</a>
+        </div>
+        <p class="small muted">Le .zip (Excel + ${nFiles} facture(s)) peut aussi être joint à l’e-mail si votre représentant le préfère.
+        ${c.report_sent_at ? `<br><b>Dernier envoi préparé le ${fdatetime(c.report_sent_at)}.</b>` : ''}</p>`,
+    });
+    const val = id => $('#' + id, m).value;
+    const saveEmails = async () => {
+      const to = cleanEmails(val('rp-to')), cc = cleanEmails(val('rp-cc'));
+      const bad = [...splitEmails(to), ...splitEmails(cc)].filter(x => !EMAIL_RE.test(x));
+      if (bad.length) { toast('E-mail invalide : ' + bad.join(', '), 'err'); return null; }
+      if (!to) { toast('Indiquez l’e-mail du représentant fiscal', 'err'); return null; }
+      if (to !== (c.report_to || '') || cc !== (c.report_cc || '')) {
+        try { await api.update('charters', c.id, { report_to: to, report_cc: cc || null }); } catch (e) { toast(errMsg(e), 'err'); }
+      }
+      return { to, cc };
+    };
+    $('[data-send]', m).onclick = async () => {
+      const r = await saveEmails(); if (!r) return;
+      const q = [];
+      if (r.cc) q.push('cc=' + encodeURIComponent(r.cc.replace(/\s+/g, '')));
+      q.push('subject=' + encodeURIComponent(val('rp-subject')), 'body=' + encodeURIComponent(val('rp-body')));
+      location.href = `mailto:${r.to.replace(/\s+/g, '')}?${q.join('&')}`;
+      try { await api.update('charters', c.id, { report_sent_at: new Date().toISOString() }); } catch { /* */ }
+      await reload(); setTimeout(() => { closeModal(); route(); toast('Message préparé dans votre messagerie'); }, 600);
+    };
+    $('[data-copy]', m).onclick = async () => {
+      const txt = val('rp-body');
+      try { await navigator.clipboard.writeText(txt); } catch { $('#rp-body', m).select(); document.execCommand('copy'); }
+      toast('Message copié');
+    };
+    $('[data-zip]', m).onclick = ev => downloadReportZip(B, ev.currentTarget);
+  };
+
   ACTIONS['close-charter'] = async b => {
     const c = charterById(b.dataset.id), st = computeStatement(buildBundle(S, c));
     const warn = [];
@@ -1138,7 +1270,7 @@
     if (!(await confirmDialog(msg, 'Rouvrir'))) return;
     try {
       await api.update('charters', c.id, { status: 'open', closed_at: null, client_signature: null, client_signed_name: null,
-        client_signed_at: null, tips_pct: null, tips_amount: null });
+        client_signed_at: null, tips_pct: null, tips_amount: null, report_sent_at: null });
       await reload(); notifyCharter(c.id); route(); toast('Compta rouverte');
     } catch (e) { toast(errMsg(e), 'err'); }
   };
@@ -1553,8 +1685,9 @@
   // ==================================================================
   //  Démarrage
   // ==================================================================
-  const TOKEN = new URLSearchParams(location.search).get('c');
-  const IS_CLIENT = !!TOKEN;
+  const QS = new URLSearchParams(location.search);
+  const TOKEN = QS.get('c'), RTOKEN = QS.get('r');
+  const IS_CLIENT = !!(TOKEN || RTOKEN);
 
   // Installation sur l'écran d'accueil (PWA)
   if (IS_CLIENT) {
@@ -1567,7 +1700,7 @@
   (async () => {
     try {
       await api.init();
-      if (IS_CLIENT) await runClient(TOKEN); else await runAdmin();
+      if (RTOKEN) await runClient(RTOKEN, 'report'); else if (TOKEN) await runClient(TOKEN); else await runAdmin();
     } catch (e) {
       const offline = !navigator.onLine || /Chargement impossible|Failed to fetch|NetworkError/i.test(errMsg(e));
       $('#app').innerHTML = `<div class="center-screen"><div class="card narrow"><div class="brand-mark">${ICON.anchor}</div>
