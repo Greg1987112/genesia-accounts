@@ -376,3 +376,8 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .inv-card > div:first-child { flex: 1; min-width: 160px; }
 .inv-num { font: 600 1.2rem var(--serif); color: var(--navy); }
 .inv-total { font: 600 1.3rem var(--serif); color: var(--navy); font-variant-numeric: tabular-nums; }
+.kpis-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.row-cancelled td { color: var(--muted); text-decoration: line-through; }
+.row-cancelled td.actions, .row-cancelled td:nth-last-child(2) { text-decoration: none; }
+@media screen and (max-width: 760px) { .kpis-3 { grid-template-columns: 1fr 1fr; } .nav { overflow-x: auto; } .nav a { flex: 1 0 auto; padding: 7px 10px; } }
+@media screen and (max-width: 420px) { .nav a { font-size: .82rem; padding: 7px 8px; } }

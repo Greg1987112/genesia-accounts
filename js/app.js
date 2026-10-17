@@ -520,7 +520,8 @@
   }
 
   const boatInvCell = (B, label) => (B.invoices || []).length ? B.invoices.map(invoiceLink).join('')
-    : `<span class="chip chip-gold" title="${t('boatInvoicePending')}">${t('boatInvoice')} ${esc(label || '')}</span>`;
+    : IS_CLIENT ? `<span class="chip chip-gold" title="${t('boatInvoicePending')}">${t('boatInvoice')} ${esc(label || '')}</span>`
+    : `<button type="button" class="chip chip-gold link-plain" data-act="inv-draft" title="Aperçu de la facture (brouillon) — elle sera numérotée à la clôture">${ICON.eye} Facture ${esc(label || '')} (aperçu)</button>`;
 
   function renderExpensesTable(B, st, { admin = false, locked = false } = {}) {
     const c = B.charter, cur = c.currency;
@@ -748,12 +749,34 @@
     return doc;
   }
 
+  // Enregistrement d'un fichier : téléchargement direct sur ordinateur ; sur iPhone/iPad (surtout l'app
+  // installée sur l'écran d'accueil, où iOS bloque les téléchargements), fenêtre « Ouvrir / Enregistrer ».
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+    if (!IS_IOS) {
+      const a = document.createElement('a'); a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove(); return;
+    }
+    const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+    const canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    const m = openModal({
+      title: LANG === 'fr' ? 'Fichier prêt' : 'File ready',
+      body: `<p class="center"><b>${esc(name)}</b></p><p class="muted small center">${LANG === 'fr'
+        ? 'Ouvrez-le pour le consulter, ou utilisez « Enregistrer / Partager » pour l’enregistrer dans Fichiers, l’envoyer par e-mail…'
+        : 'Open it to view, or use “Save / Share” to save it to Files, send it by e-mail…'}</p>`,
+      footer: `<a class="btn btn-ghost" href="${url}" target="_blank" rel="noopener" download="${esc(name)}">${ICON.eye}${LANG === 'fr' ? 'Ouvrir' : 'Open'}</a>
+        ${canShare ? `<button class="btn btn-primary" data-share>${ICON.share}${LANG === 'fr' ? 'Enregistrer / Partager' : 'Save / Share'}</button>` : ''}`,
+    });
+    const sh = $('[data-share]', m);
+    if (sh) sh.onclick = () => navigator.share({ files: [file], title: name }).then(closeModal).catch(() => {});
+  }
+
   async function downloadInvoice(inv, draft = false) {
     try {
       const doc = await invoicePdf(inv, draft);
-      const blob = doc.output('blob'), a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = draft ? `Facture_brouillon_${safeName(inv.buyer?.charter || '')}.pdf` : `Facture_${inv.number}.pdf`;
-      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      saveBlob(doc.output('blob'), draft ? `Facture_brouillon_${safeName(inv.buyer?.charter || '')}.pdf` : `Facture_${inv.number}.pdf`);
     } catch (e) { toast(errMsg(e), 'err'); }
   }
   const invoiceLink = inv => { INV_CACHE[inv.id] = inv; return `<button type="button" class="file-link link-plain" data-inv="${esc(inv.id)}">${ICON.file}<span>${t('boatInvoice')} ${esc(inv.number)}</span></button>`; };
@@ -788,7 +811,7 @@
     const wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, 'Accounting');
     if (asArray) return window.XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
-    window.XLSX.writeFile(wb, `${safeName(c.title || 'charter')}.xlsx`);
+    saveBlob(new Blob([window.XLSX.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${safeName(c.title || 'charter')}.xlsx`);
     return null;
   }
 
@@ -817,10 +840,7 @@
         catch { missing++; }
       }
       const blob = await zip.generateAsync({ type: 'blob' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob); a.download = `${safeName(c.title)}_rapport.zip`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+      saveBlob(blob, `${safeName(c.title)}_rapport.zip`);
       if (missing) toast(`${missing} facture(s) n’ont pas pu être ajoutées`, 'err');
     } catch (e) { toast(errMsg(e), 'err'); }
     finally { busy(btn, false); }
@@ -844,7 +864,7 @@
         if (!al.length) return [[...base, '', '', v.hours, lh]];
         return al.map((a, i) => i === 0 ? [...base, a.liters, lotNum(a.bunker_id), v.hours, lh] : ['', '', '', '', '', '', '', a.liters, lotNum(a.bunker_id)]);
       })]), 'Voyages');
-    X.writeFile(wb, `Fuel_booklet_${today()}.xlsx`);
+    saveBlob(new Blob([X.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Fuel_booklet_${today()}.xlsx`);
   }
 
   // ==================================================================
@@ -1107,6 +1127,7 @@
         <nav class="nav">
           <a href="#/charters" class="${active === 'charters' ? 'on' : ''}">Charters</a>
           <a href="#/fuel/voyages" class="${active === 'fuel' ? 'on' : ''}">Fuel booklet</a>
+          <a href="#/invoices" class="${active === 'invoices' ? 'on' : ''}">Factures</a>
           <a href="#/settings" class="${active === 'settings' ? 'on' : ''}">Paramètres</a>
         </nav>
         <div class="topbar-right"><span class="user small">${esc(USER)}</span>
@@ -1123,6 +1144,7 @@
     if (parts[0] === 'charter' && parts[1]) return viewCharter(parts[1]);
     if (parts[0] === 'fuel') return viewFuel(parts[1] || 'voyages');
     if (parts[0] === 'settings') return viewSettings();
+    if (parts[0] === 'invoices') return viewInvoices(parts[1]);
     return viewCharters();
   }
 
@@ -1188,6 +1210,49 @@
       catch (err) { toast(errMsg(err), 'err'); busy(btn, false); }
     });
   }
+
+  // ---------------- Registre des factures émises par le bateau ----------------
+  function viewInvoices(yearSel) {
+    const all = S.invoices.slice().sort((a, b) => b.year - a.year || b.seq - a.seq);
+    const years = [...new Set(all.map(i => i.year))];
+    const year = yearSel ? +yearSel : years[0];
+    const list = all.filter(i => !year || i.year === year);
+    const ok = list.filter(i => i.status === 'issued');
+    $('#app').innerHTML = shell('invoices', `
+      <div class="page-head"><div><div class="eyebrow">${esc(boatName())}</div><h1>Factures émises</h1></div>
+        <div class="head-actions">
+          ${years.length > 1 ? `<select id="inv-year">${years.map(y => `<option ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select>` : ''}
+          ${list.length ? `<button class="btn btn-ghost" data-act="inv-register">${ICON.sheet}Registre (Excel)</button>` : ''}
+        </div></div>
+      ${list.length ? `<div class="kpis kpis-3">
+          <div class="kpi"><div class="kpi-label">Factures ${year || ''}</div><div class="kpi-value">${ok.length}</div></div>
+          <div class="kpi"><div class="kpi-label">Total HT</div><div class="kpi-value">${money(sum(ok, i => i.total_ht))}</div></div>
+          <div class="kpi"><div class="kpi-label">Total TTC</div><div class="kpi-value">${money(sum(ok, i => i.total_ttc))}</div></div></div>
+        <section class="panel"><div class="table-wrap"><table class="table table-cards">
+          <thead><tr><th>N°</th><th>Date</th><th>Client</th><th>Charter</th><th class="num">HT</th><th class="num">TVA</th><th class="num">TTC</th><th>Statut</th><th></th></tr></thead>
+          <tbody>${list.map(i => { INV_CACHE[i.id] = i; const ch = charterById(i.charter_id); return `<tr class="${i.status === 'cancelled' ? 'row-cancelled' : ''}">
+            <td data-label="N°" class="strong">${esc(i.number)}</td><td data-label="Date">${fdate(i.issue_date)}</td>
+            <td data-label="Client">${esc(i.buyer?.name || '')}</td>
+            <td data-label="Charter">${ch ? `<a href="#/charter/${ch.id}">${esc(ch.title)}</a>` : esc(i.buyer?.charter || '')}</td>
+            <td data-label="HT" class="num">${money(i.total_ht, i.currency)}</td><td data-label="TVA" class="num">${money(i.total_vat, i.currency)}</td>
+            <td data-label="TTC" class="num strong">${money(i.total_ttc, i.currency)}</td>
+            <td data-label="Statut">${i.status === 'cancelled' ? '<span class="badge badge-open">Annulée</span>' : '<span class="badge badge-ok">Émise</span>'}</td>
+            <td class="actions"><button class="btn btn-primary btn-sm" data-inv="${esc(i.id)}">${ICON.file}PDF</button></td></tr>`; }).join('')}</tbody>
+        </table></div></section>`
+      : `<div class="empty-state card"><p>Aucune facture émise pour le moment.</p><p class="muted small">Les factures de ${esc(boatName())} sont émises automatiquement à la clôture d’un charter qui contient du fuel ou des lignes facturées par le bateau.</p></div>`}`);
+    const sel = $('#inv-year'); if (sel) sel.onchange = () => { location.hash = `#/invoices/${sel.value}`; };
+  }
+  ACTIONS['inv-register'] = async () => {
+    try { await loadScript(XLSX_JS); } catch (e) { return toast(errMsg(e), 'err'); }
+    const X = window.XLSX, y = +(location.hash.split('/')[2] || 0);
+    const list = S.invoices.slice().sort((a, b) => a.year - b.year || a.seq - b.seq).filter(i => !y || i.year === y);
+    const rows = [['N°', 'Date', 'Client', 'Charter', 'Total HT', 'TVA', 'Total TTC', 'Devise', 'Statut', 'Annulée le'],
+      ...list.map(i => [i.number, fdate(i.issue_date), i.buyer?.name || '', i.buyer?.charter || '', toNum(i.total_ht), toNum(i.total_vat), toNum(i.total_ttc), i.currency,
+        i.status === 'cancelled' ? 'Annulée' : 'Émise', i.cancelled_at ? fdate(i.cancelled_at.slice(0, 10)) : ''])];
+    const ws = X.utils.aoa_to_sheet(rows); ws['!cols'] = [{ wch: 16 }, { wch: 11 }, { wch: 22 }, { wch: 34 }, { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 7 }, { wch: 9 }, { wch: 11 }];
+    const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Factures');
+    saveBlob(new Blob([X.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `Registre_factures_${boatName()}_${y || 'tout'}.xlsx`);
+  };
 
   // ---------------- Liste des charters ----------------
   function viewCharters() {
@@ -1301,6 +1366,7 @@
           <a class="btn btn-ghost" href="${esc(clientUrl(c))}" target="_blank" rel="noopener">${ICON.eye}Vue client</a>
           <button class="btn btn-ghost" data-act="print">${ICON.print}PDF</button>
           <button class="btn btn-ghost" data-act="xlsx-charter">${ICON.sheet}Excel</button>
+          ${B.invoices.length ? B.invoices.map(i => { INV_CACHE[i.id] = i; return `<button class="btn btn-ghost" data-inv="${esc(i.id)}">${ICON.file}Facture ${esc(i.number)}</button>`; }).join('') : ''}
           <button class="btn btn-ghost" data-act="zip-charter">${ICON.file}Factures (.zip)</button>
           <button class="btn btn-ghost" data-act="edit-charter" data-id="${c.id}">${ICON.edit}Modifier</button>
         </div>
