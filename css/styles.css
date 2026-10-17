@@ -368,3 +368,11 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
   .login-bg { padding-top: env(safe-area-inset-top); }
 }
 .tips-toggle { background: var(--gold-soft); border-radius: 10px; padding: 10px 12px; }
+
+/* ---------- facturation bateau ---------- */
+.boat-toggle { background: var(--info-soft); border-radius: 10px; padding: 9px 12px; }
+.link-plain { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.inv-card { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; background: #fdfcf9; }
+.inv-card > div:first-child { flex: 1; min-width: 160px; }
+.inv-num { font: 600 1.2rem var(--serif); color: var(--navy); }
+.inv-total { font: 600 1.3rem var(--serif); color: var(--navy); font-variant-numeric: tabular-nums; }

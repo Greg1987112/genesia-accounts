@@ -12,6 +12,7 @@
   const DEMO = !CFG.supabaseUrl || /VOTRE/i.test(CFG.supabaseUrl) || !CFG.supabaseAnonKey || /VOTRE/i.test(CFG.supabaseAnonKey);
   const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
   const XLSX_JS = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  const JSPDF_JS = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
   const JSZIP_JS = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
   const YACHT = CFG.yachtName || 'Motor Yacht';
 
@@ -90,6 +91,7 @@
       continue: 'Continuer', back: 'Retour', tipsLine: 'Tips équipage', ofCharterFee: 'du charter fee',
       tipsChosen: 'Tips', totalToSign: 'Total à approuver', charterFee: 'Charter fee', tipsInvalid: 'Montant de tips invalide.',
       step: 'Étape', reportTitle: 'Rapport de charter', zipAll: 'Toutes les factures (.zip)',
+      boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
     },
     en: {
@@ -121,6 +123,7 @@
       continue: 'Continue', back: 'Back', tipsLine: 'Crew gratuity', ofCharterFee: 'of the charter fee',
       tipsChosen: 'Gratuity', totalToSign: 'Total to approve', charterFee: 'Charter fee', tipsInvalid: 'Invalid gratuity amount.',
       step: 'Step', reportTitle: 'Charter report', zipAll: 'All invoices (.zip)',
+      boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
     },
   };
@@ -154,6 +157,7 @@
       cash: S.cash_withdrawals.filter(w => w.charter_id === c.id).sort((a, b) => String(a.date).localeCompare(String(b.date))),
       voyages: vs.map(v => ({ id: v.id, description: v.description, start_date: v.start_date, end_date: v.end_date, rob_before: v.rob_before, rob_after: v.rob_after })),
       fuel,
+      invoices: (S.invoices || []).filter(i => i.charter_id === c.id && i.status === 'issued'),
     };
   }
 
@@ -212,7 +216,7 @@
   // ------------------------------------------------------------------
   //  Back-ends : Supabase (production) ou Démo (navigateur)
   // ------------------------------------------------------------------
-  const TABLES = ['charters', 'expenses', 'cash_withdrawals', 'bunkers', 'voyages', 'allocations'];
+  const TABLES = ['charters', 'expenses', 'cash_withdrawals', 'bunkers', 'voyages', 'allocations', 'boat_profile', 'invoices'];
 
   class SupabaseBackend {
     async init() {
@@ -249,6 +253,14 @@
     }
     async remove(table, id) { const { error } = await this.sb.from(table).delete().eq('id', id); if (error) throw error; }
     async removeWhere(table, col, val) { const { error } = await this.sb.from(table).delete().eq(col, val); if (error) throw error; }
+    async saveProfile(data) { const { error } = await this.sb.from('boat_profile').upsert({ id: 1, data }); if (error) throw error; }
+    async issueInvoice(a) {
+      const { data, error } = await this.sb.rpc('issue_invoice', { p_charter: a.charter_id, p_prefix: a.prefix, p_seller: a.seller,
+        p_buyer: a.buyer, p_lines: a.lines, p_total_ht: a.total_ht, p_total_vat: a.total_vat, p_total_ttc: a.total_ttc,
+        p_currency: a.currency, p_fingerprint: a.fingerprint });
+      if (error) throw error; return data;
+    }
+    async cancelInvoice(id) { const { error } = await this.sb.rpc('cancel_invoice', { p_id: id }); if (error) throw error; }
     async upload(file, prefix) {
       const safe = file.name.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w.\-]+/g, '_').slice(-80);
       const path = `${prefix}/${uuid()}/${safe}`;
@@ -333,6 +345,15 @@
       this.save();
     }
     async removeWhere(table, col, val) { this.S[table] = this.S[table].filter(x => x[col] !== val); this.save(); }
+    async saveProfile(data) { this.S.boat_profile = [{ id: 1, data }]; this.save(); }
+    async issueInvoice(a) {
+      const y = new Date().getFullYear(), pfx = String(a.prefix || 'BOAT').replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'BOAT';
+      const seq = Math.max(0, ...this.S.invoices.filter(i => i.prefix === pfx && i.year === y).map(i => i.seq)) + 1;
+      const inv = { id: uuid(), ...a, prefix: pfx, year: y, seq, number: `${pfx}-${y}-${String(seq).padStart(4, '0')}`,
+        issue_date: today(), status: 'issued', created_at: new Date().toISOString() };
+      this.S.invoices.push(inv); this.save(); return inv;
+    }
+    async cancelInvoice(id) { const i = this.S.invoices.find(x => x.id === id); if (i) { i.status = 'cancelled'; i.cancelled_at = new Date().toISOString(); } this.save(); }
     async upload(file, prefix) {
       const path = `${prefix}/${uuid()}/${file.name}`;
       this.files[path] = URL.createObjectURL(file);
@@ -345,7 +366,7 @@
       if (!c) return null;
       const B = buildBundle(this.S, c);
       const { client_token, notes, signed_snapshot, report_token, report_to, report_cc, ...pub } = c; // eslint-disable-line no-unused-vars
-      return { ...B, charter: pub };
+      return { ...B, charter: pub, invoices: B.invoices.map(({ fingerprint, ...i }) => i) }; // eslint-disable-line no-unused-vars
     }
     async reportView(token) {
       const c = this.S.charters.find(x => x.report_token === token && x.status === 'signed');
@@ -498,6 +519,9 @@
     </div>`;
   }
 
+  const boatInvCell = (B, label) => (B.invoices || []).length ? B.invoices.map(invoiceLink).join('')
+    : `<span class="chip chip-gold" title="${t('boatInvoicePending')}">${t('boatInvoice')} ${esc(label || '')}</span>`;
+
   function renderExpensesTable(B, st, { admin = false, locked = false } = {}) {
     const c = B.charter, cur = c.currency;
     const fuelInvoices = [];
@@ -514,7 +538,7 @@
         <td data-label="${t('exclVat')}" class="num"></td><td data-label="${t('vat')}" class="num"></td>
         <td data-label="${t('total')}" class="num strong">${money(st.fuelTotal, cur)}</td>
         <td data-label="${t('payment')}">${esc(c.fuel_method || '')}</td>
-        <td data-label="${t('invoice')}" class="files">${fuelInvoices.map(f => fileLink(f.file_path, `${t('lot')} ${f.bunker_num ?? ''}`)).join('') || ''}</td>
+        <td data-label="${t('invoice')}" class="files">${c.fuel_by_boat !== false ? boatInvCell(B, c.fuel_company) : ''}${fuelInvoices.map(f => fileLink(f.file_path, `${t('lot')} ${f.bunker_num ?? ''}`)).join('') || ''}</td>
         ${admin ? `<td class="actions"><a class="icon-btn" href="#/fuel/voyages" title="Gérer dans le fuel booklet">${ICON.drop}</a></td>` : ''}
       </tr>`);
     }
@@ -528,7 +552,7 @@
         <td data-label="${t('vat')}" class="num">${e.vat != null ? money(e.vat, cur) : ''}</td>
         <td data-label="${t('total')}" class="num strong">${money(e.total, cur)}</td>
         <td data-label="${t('payment')}">${esc(e.method)}</td>
-        <td data-label="${t('invoice')}" class="files">${e.file_path ? fileLink(e.file_path, t('view')) : ''}</td>
+        <td data-label="${t('invoice')}" class="files">${e.billed_by_boat ? boatInvCell(B, e.company) : ''}${e.file_path ? fileLink(e.file_path, t('view')) : ''}</td>
         ${admin ? `<td class="actions">${locked ? '' : `<button class="icon-btn" data-act="edit-expense" data-id="${e.id}" title="Modifier">${ICON.edit}</button>
           <button class="icon-btn danger" data-act="del-expense" data-id="${e.id}" title="Supprimer">${ICON.trash}</button>`}</td>` : ''}
       </tr>`);
@@ -600,6 +624,145 @@
   }
 
   // ------------------------------------------------------------------
+  //  Facturation par le bateau
+  // ------------------------------------------------------------------
+  const PROFILE_DEFAULTS = {
+    short_name: 'Boat', legal_name: '', address: '', vat_number: '', registration: '', email: '', phone: '',
+    iban: '', bic: '', bank: '', invoice_prefix: 'BOAT', vat_rate: 0,
+    vat_mention: '', payment_terms: 'Montant prélevé sur l’APA (Advance Provisioning Allowance) du charter.', footer: '',
+    suppliers: [],
+  };
+  let PROFILE = { ...PROFILE_DEFAULTS };
+  const boatName = () => (PROFILE.short_name || 'Boat').trim();
+  const isBoatName = s => !!s && String(s).trim().toLowerCase() === boatName().toLowerCase();
+  const INV_CACHE = {};
+
+  // Lignes facturées par le bateau : fuel (si coché sur le charter) + dépenses marquées « facturée par le bateau »
+  function boatInvoiceDraft(B, prof = PROFILE) {
+    const c = B.charter, st = computeStatement(B), rateDefault = toNum(prof.vat_rate) || 0;
+    const mk = (designation, qty, unit, ttc, rate) => {
+      const ht = r2(ttc / (1 + rate / 100));
+      return { designation, qty, unit, rate, unit_price_ht: qty ? r3(ht / qty) : ht, total_ht: ht, total_vat: r2(ttc - ht), total_ttc: r2(ttc) };
+    };
+    const lines = [];
+    if (c.fuel_by_boat !== false) st.fuelLines.forEach(f => lines.push(mk(
+      `Gasoil — ${c.fuel_description || 'MEs & DGs'} — soutage n°${f.bunker_num ?? ''} du ${fdate(f.bunker_date)}${f.town ? ` (${f.town})` : ''}`,
+      toNum(f.liters), 'L', f.amount, rateDefault)));
+    B.expenses.filter(e => e.billed_by_boat).forEach(e => {
+      const rate = toNum(e.amount_ht) && toNum(e.vat) != null ? r2(e.vat / e.amount_ht * 100) : rateDefault;
+      lines.push(mk([e.category, e.description].filter(Boolean).join(' — ') || 'Prestation', 1, '', toNum(e.total) || 0, rate));
+    });
+    const seller = { short_name: prof.short_name, legal_name: prof.legal_name || prof.short_name, address: prof.address,
+      vat_number: prof.vat_number, registration: prof.registration, email: prof.email, phone: prof.phone,
+      iban: prof.iban, bic: prof.bic, bank: prof.bank, yacht: c.yacht || YACHT };
+    const buyer = { name: c.client_name || '', address: c.client_address || '', vat_number: c.client_vat || '',
+      charter: c.title, start_date: c.start_date, end_date: c.end_date };
+    const totals = { total_ht: r2(sum(lines, l => l.total_ht)), total_vat: r2(sum(lines, l => l.total_vat)), total_ttc: r2(sum(lines, l => l.total_ttc)) };
+    const notes = { vat_mention: prof.vat_mention || '', payment_terms: prof.payment_terms || '', footer: prof.footer || '' };
+    const fingerprint = JSON.stringify({ lines, buyer, totals, seller: { ...seller }, notes });
+    return { charter_id: c.id, prefix: prof.invoice_prefix || prof.short_name || 'BOAT', seller: { ...seller, notes }, buyer,
+      lines, ...totals, currency: c.currency || 'EUR', fingerprint };
+  }
+
+  // Émet (ou ré-émet si le contenu a changé) la facture du charter — appelé à la clôture
+  async function ensureBoatInvoice(c) {
+    const draft = boatInvoiceDraft(buildBundle(S, c));
+    const current = S.invoices.find(i => i.charter_id === c.id && i.status === 'issued');
+    if (current && current.fingerprint === draft.fingerprint) return { inv: current, changed: false };
+    if (current) await api.cancelInvoice(current.id);
+    if (!draft.lines.length) return { inv: null, changed: !!current };
+    const inv = await api.issueInvoice(draft);
+    return { inv, changed: true, replaced: current?.number };
+  }
+
+  const pdfText = s => String(s ?? '').replace(/[  ]/g, ' ').replace(/→/g, '->').replace(/[^\x00-\xff€—–’‘“”…•]/g, '');
+  const pdfMoney = (v, cur) => pdfText(money(v, cur));
+
+  async function invoicePdf(inv, draft = false) {
+    await loadScript(JSPDF_JS);
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const W = 210, M = 16, cur = inv.currency || 'EUR', s = inv.seller || {}, b = inv.buyer || {}, n = s.notes || {};
+    const navy = [15, 42, 68], gold = [184, 147, 90], grey = [110, 120, 135];
+    let y = 18;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(...navy);
+    doc.text(pdfText(s.legal_name || s.short_name || 'Boat'), M, y);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(...grey);
+    const sellerLines = [s.yacht, ...(String(s.address || '').split('\n')), s.vat_number && `TVA : ${s.vat_number}`,
+      s.registration, [s.email, s.phone].filter(Boolean).join(' · ')].filter(Boolean).map(pdfText);
+    sellerLines.forEach((l, i) => doc.text(l, M, y + 6 + i * 4.3));
+    // titre facture
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(22); doc.setTextColor(...gold);
+    doc.text(draft ? 'BROUILLON' : 'FACTURE', W - M, y, { align: 'right' });
+    doc.setFontSize(10); doc.setTextColor(...navy);
+    doc.text(pdfText(draft ? 'Non numérotée — aperçu' : `N° ${inv.number}`), W - M, y + 7, { align: 'right' });
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(...grey);
+    doc.text(pdfText(`Date : ${fdate(inv.issue_date || today())}`), W - M, y + 12, { align: 'right' });
+    y = Math.max(y + 8 + sellerLines.length * 4.3, 48);
+    // client
+    doc.setDrawColor(...gold); doc.setLineWidth(0.4); doc.line(M, y, W - M, y); y += 7;
+    doc.setFontSize(8); doc.setTextColor(...gold); doc.setFont('helvetica', 'bold');
+    doc.text('FACTURÉ À', M, y); doc.text('CHARTER', W / 2 + 5, y); y += 5;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(20, 34, 51);
+    const buyerLines = [b.name || '—', ...String(b.address || '').split('\n'), b.vat_number && `TVA : ${b.vat_number}`].filter(Boolean).map(pdfText);
+    buyerLines.forEach((l, i) => doc.text(l, M, y + i * 4.6));
+    const chLines = doc.splitTextToSize(pdfText(b.charter || ''), W / 2 - M - 5);
+    chLines.forEach((l, i) => doc.text(l, W / 2 + 5, y + i * 4.6));
+    doc.setTextColor(...grey); doc.setFontSize(9);
+    doc.text(pdfText(`Du ${fdate(b.start_date)} au ${fdate(b.end_date)}`), W / 2 + 5, y + chLines.length * 4.6);
+    y += Math.max(buyerLines.length, chLines.length + 1) * 4.6 + 8;
+    // tableau
+    const cols = [{ x: M, w: 82, h: 'Désignation' }, { x: M + 82, w: 22, h: 'Qté', r: 1 }, { x: M + 104, w: 22, h: 'PU HT', r: 1 },
+      { x: M + 126, w: 14, h: 'TVA', r: 1 }, { x: M + 140, w: 38, h: 'Total TTC', r: 1 }];
+    doc.setFillColor(...navy); doc.rect(M, y - 5, W - 2 * M, 8, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(255, 255, 255);
+    cols.forEach(c => doc.text(c.h, c.r ? c.x + c.w - 2 : c.x + 2, y, { align: c.r ? 'right' : 'left' }));
+    y += 8; doc.setFont('helvetica', 'normal'); doc.setTextColor(20, 34, 51);
+    (inv.lines || []).forEach(l => {
+      const d = doc.splitTextToSize(pdfText(l.designation), cols[0].w - 4);
+      if (y + d.length * 4.4 > 250) { doc.addPage(); y = 20; }
+      doc.text(d, cols[0].x + 2, y);
+      doc.text(pdfText(`${fmt(l.qty, l.unit === 'L' ? 0 : (l.qty % 1 ? 2 : 0))}${l.unit ? ' ' + l.unit : ''}`), cols[1].x + cols[1].w - 2, y, { align: 'right' });
+      doc.text(pdfText(fmt(l.unit_price_ht, l.unit === 'L' ? 3 : 2)), cols[2].x + cols[2].w - 2, y, { align: 'right' });
+      doc.text(pdfText(`${fmt(l.rate, l.rate % 1 ? 1 : 0)} %`), cols[3].x + cols[3].w - 2, y, { align: 'right' });
+      doc.text(pdfMoney(l.total_ttc, cur), cols[4].x + cols[4].w - 2, y, { align: 'right' });
+      y += d.length * 4.4 + 2.5;
+      doc.setDrawColor(228, 222, 211); doc.setLineWidth(0.2); doc.line(M, y - 3, W - M, y - 3);
+    });
+    // totaux
+    y += 3;
+    const tot = [['Total HT', inv.total_ht], ['TVA', inv.total_vat], ['Total TTC', inv.total_ttc]];
+    tot.forEach(([k, v], i) => {
+      const last = i === tot.length - 1;
+      doc.setFont('helvetica', last ? 'bold' : 'normal'); doc.setFontSize(last ? 11.5 : 9.5);
+      doc.setTextColor(...(last ? navy : [20, 34, 51]));
+      doc.text(k, W - M - 50, y); doc.text(pdfMoney(v, cur), W - M, y, { align: 'right' }); y += last ? 7 : 5.5;
+    });
+    // mentions
+    y += 6; doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...grey);
+    const mentions = [n.payment_terms, n.vat_mention,
+      (s.iban || s.bic) && `Coordonnées bancaires : ${[s.bank, s.iban && `IBAN ${s.iban}`, s.bic && `BIC ${s.bic}`].filter(Boolean).join(' · ')}`,
+      n.footer].filter(Boolean);
+    mentions.forEach(txt => { const l = doc.splitTextToSize(pdfText(txt), W - 2 * M); if (y + l.length * 4 > 285) { doc.addPage(); y = 20; } doc.text(l, M, y); y += l.length * 4 + 2; });
+    if (draft) { doc.setFontSize(60); doc.setTextColor(235, 225, 205); doc.text('BROUILLON', W / 2, 170, { align: 'center', angle: 30 }); }
+    return doc;
+  }
+
+  async function downloadInvoice(inv, draft = false) {
+    try {
+      const doc = await invoicePdf(inv, draft);
+      const blob = doc.output('blob'), a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = draft ? `Facture_brouillon_${safeName(inv.buyer?.charter || '')}.pdf` : `Facture_${inv.number}.pdf`;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    } catch (e) { toast(errMsg(e), 'err'); }
+  }
+  const invoiceLink = inv => { INV_CACHE[inv.id] = inv; return `<button type="button" class="file-link link-plain" data-inv="${esc(inv.id)}">${ICON.file}<span>${t('boatInvoice')} ${esc(inv.number)}</span></button>`; };
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-inv]'); if (!b) return;
+    e.preventDefault(); const inv = INV_CACHE[b.dataset.inv]; if (inv) downloadInvoice(inv);
+  });
+
+  // ------------------------------------------------------------------
   //  Export Excel
   // ------------------------------------------------------------------
   async function exportCharterXlsx(B, asArray = false) {
@@ -645,6 +808,9 @@
       const seen = new Set();
       st.fuelLines.filter(f => f.file_path && !seen.has(f.file_path) && seen.add(f.file_path)).forEach(f => items.push({ path: f.file_path,
         name: `Fuel/Soutage_${f.bunker_num ?? ''}_${safeName(f.file_name || f.file_path.split('/').pop())}` }));
+      for (const inv of (B.invoices || [])) {
+        try { const doc = await invoicePdf(inv); zip.file(`Facture_bateau_${inv.number}.pdf`, doc.output('arraybuffer')); } catch { /* */ }
+      }
       let missing = 0;
       for (const it of items) {
         try { const url = api.fileUrl(it.path); const r = await fetch(url); if (!r.ok) throw 0; zip.file(it.name, await r.blob()); }
@@ -887,7 +1053,10 @@
   let S = null;          // toutes les données
   let USER = '';
 
-  async function reload() { S = await api.loadAll(); }
+  async function reload() {
+    S = await api.loadAll();
+    PROFILE = { ...PROFILE_DEFAULTS, ...((S.boat_profile || [])[0]?.data || {}) };
+  }
   const charterById = id => S.charters.find(c => c.id === id);
   const clientUrl = c => `${location.origin}${location.pathname}?c=${c.client_token}`;
 
@@ -938,6 +1107,7 @@
         <nav class="nav">
           <a href="#/charters" class="${active === 'charters' ? 'on' : ''}">Charters</a>
           <a href="#/fuel/voyages" class="${active === 'fuel' ? 'on' : ''}">Fuel booklet</a>
+          <a href="#/settings" class="${active === 'settings' ? 'on' : ''}">Paramètres</a>
         </nav>
         <div class="topbar-right"><span class="user small">${esc(USER)}</span>
           <button class="icon-btn light" data-act="logout" title="Se déconnecter">${ICON.logout}</button></div>
@@ -952,6 +1122,7 @@
     const parts = (location.hash.replace(/^#\/?/, '') || 'charters').split('/');
     if (parts[0] === 'charter' && parts[1]) return viewCharter(parts[1]);
     if (parts[0] === 'fuel') return viewFuel(parts[1] || 'voyages');
+    if (parts[0] === 'settings') return viewSettings();
     return viewCharters();
   }
 
@@ -965,6 +1136,58 @@
   });
   ACTIONS.logout = async () => { await api.signOut(); location.hash = ''; renderLogin(); };
   ACTIONS['demo-reset'] = async () => { if (await confirmDialog('Remettre les données de démonstration à zéro ?', 'Réinitialiser')) { api.reset(); await reload(); route(); } };
+
+  // ---------------- Paramètres : fiche bateau & fournisseurs ----------------
+  function viewSettings() {
+    const P = PROFILE;
+    $('#app').innerHTML = shell('settings', `
+      <div class="page-head"><div><div class="eyebrow">Paramètres</div><h1>Bateau & facturation</h1></div></div>
+      <form id="f-settings">
+      <section class="panel">
+        <div class="panel-head"><h2>Société qui facture (le bateau)</h2></div>
+        <p class="muted small">Ces informations apparaissent sur les factures émises automatiquement par le bateau (fuel et lignes dont le fournisseur est le bateau).</p>
+        <div class="form-grid">
+          <label class="field"><span>Nom dans la liste des fournisseurs</span><input name="short_name" required value="${esc(P.short_name)}" placeholder="ex. TDB"></label>
+          <label class="field"><span>Raison sociale <small>(sur la facture)</small></span><input name="legal_name" value="${esc(P.legal_name)}" placeholder="ex. TDB SAS"></label>
+          <label class="field span-2"><span>Adresse de facturation</span><textarea name="address" rows="3" placeholder="Rue&#10;Code postal Ville&#10;Pays">${esc(P.address)}</textarea></label>
+          <label class="field"><span>N° de TVA intracommunautaire</span><input name="vat_number" value="${esc(P.vat_number)}"></label>
+          <label class="field"><span>Immatriculation <small>(RCS / SIRET…)</small></span><input name="registration" value="${esc(P.registration)}"></label>
+          <label class="field"><span>E-mail</span><input name="email" type="email" value="${esc(P.email)}"></label>
+          <label class="field"><span>Téléphone</span><input name="phone" value="${esc(P.phone)}"></label>
+          <label class="field"><span>Banque</span><input name="bank" value="${esc(P.bank)}"></label>
+          <label class="field"><span>IBAN</span><input name="iban" value="${esc(P.iban)}"></label>
+          <label class="field"><span>BIC</span><input name="bic" value="${esc(P.bic)}"></label>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Factures</h2></div>
+        <div class="form-grid">
+          <label class="field"><span>Préfixe de numérotation</span><input name="invoice_prefix" value="${esc(P.invoice_prefix)}" placeholder="TDB"><small class="muted">Ex. TDB → TDB-2026-0001, TDB-2026-0002…</small></label>
+          <label class="field"><span>Taux de TVA par défaut sur la refacturation (%)</span><input type="number" step="0.01" min="0" name="vat_rate" value="${esc(P.vat_rate)}"></label>
+          <label class="field span-2"><span>Mention TVA <small>(ex. régime d’exonération applicable — à valider avec votre représentant fiscal)</small></span><input name="vat_mention" value="${esc(P.vat_mention)}"></label>
+          <label class="field span-2"><span>Conditions de règlement</span><input name="payment_terms" value="${esc(P.payment_terms)}"></label>
+          <label class="field span-2"><span>Pied de facture <small>(facultatif)</small></span><input name="footer" value="${esc(P.footer)}"></label>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Liste des fournisseurs</h2></div>
+        <p class="muted small">Un fournisseur par ligne. Ils sont proposés lors de la saisie d’une dépense. Le bateau (« ${esc(boatName())} ») est toujours en tête de liste : le choisir marque la ligne comme facturée par le bateau.</p>
+        <label class="field"><textarea name="suppliers" rows="8" placeholder="BWA&#10;Cavavin&#10;Metro">${esc((P.suppliers || []).join('\n'))}</textarea></label>
+      </section>
+      <div class="row-gap"><button class="btn btn-primary" type="submit">${ICON.check}Enregistrer les paramètres</button></div>
+      </form>`);
+    $('#f-settings').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target; if (!f.reportValidity()) return;
+      const d = Object.fromEntries(new FormData(f));
+      const data = { ...PROFILE, ...d, vat_rate: toNum(d.vat_rate) || 0,
+        invoice_prefix: (d.invoice_prefix || d.short_name || 'BOAT').replace(/[^A-Za-z0-9]/g, '').toUpperCase(),
+        suppliers: [...new Set(String(d.suppliers || '').split('\n').map(s => s.trim()).filter(s => s && !isBoatName(s)))] };
+      const btn = $('button[type=submit]', f); busy(btn, true);
+      try { await api.saveProfile(data); await reload(); viewSettings(); toast('Paramètres enregistrés'); }
+      catch (err) { toast(errMsg(err), 'err'); busy(btn, false); }
+    });
+  }
 
   // ---------------- Liste des charters ----------------
   function viewCharters() {
@@ -995,6 +1218,8 @@
       body: `<form class="form-grid" id="f-charter">
         <label class="field span-2"><span>Intitulé</span><input name="title" required value="${esc(c.title || '')}" placeholder="Charter Dupont — Juillet 2026"></label>
         <label class="field"><span>Client (charterer)</span><input name="client_name" value="${esc(c.client_name || '')}"></label>
+        <label class="field"><span>N° TVA du client <small>(facultatif)</small></span><input name="client_vat" value="${esc(c.client_vat || '')}"></label>
+        <label class="field span-2"><span>Adresse de facturation du client <small>(pour la facture du bateau)</small></span><textarea name="client_address" rows="2">${esc(c.client_address || '')}</textarea></label>
         <label class="field"><span>Yacht</span><input name="yacht" value="${esc(c.yacht || YACHT)}"></label>
         <label class="field"><span>Début</span><input type="date" name="start_date" value="${esc(c.start_date || '')}"></label>
         <label class="field"><span>Fin</span><input type="date" name="end_date" value="${esc(c.end_date || '')}"></label>
@@ -1004,7 +1229,9 @@
           <span><b>Proposer les tips au client avant sa signature</b><br><small class="muted">Fenêtre 10 % / 15 % / 20 % du charter fee ou montant libre. Décochez si vous préférez ne pas aborder les tips dans l’app.</small></span></label>
         <label class="field"><span>Devise</span><select name="currency">${opt(['EUR', 'USD', 'GBP', 'CHF'], c.currency || CFG.currency || 'EUR')}</select></label>
         <div class="field-sep span-2">Ligne fuel (calculée automatiquement)</div>
-        <label class="field"><span>Société</span><input name="fuel_company" value="${esc(c.fuel_company ?? 'TDB')}"></label>
+        <label class="field"><span>Société</span><input name="fuel_company" value="${esc(c.fuel_company ?? boatName())}" list="dl-fuel-co"><datalist id="dl-fuel-co"><option value="${esc(boatName())}"></datalist></label>
+        <label class="check span-2 boat-toggle"><input type="checkbox" name="fuel_by_boat" ${c.fuel_by_boat !== false ? 'checked' : ''}>
+          <span><b>Fuel facturé par le bateau (${esc(boatName())})</b> — inclus dans la facture émise automatiquement à la clôture</span></label>
         <label class="field"><span>Description</span><input name="fuel_description" value="${esc(c.fuel_description ?? 'MEs & DGs')}"></label>
         <label class="field"><span>Paiement</span><select name="fuel_method">${opt(METHODS, c.fuel_method || 'To be paid')}</select></label>
         <div class="field-sep span-2">Envoi du rapport final (après signature)</div>
@@ -1021,7 +1248,8 @@
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
-        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt,
+        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt, fuel_by_boat: !!d.fuel_by_boat,
+        client_address: d.client_address || null, client_vat: d.client_vat || null,
         report_to: cleanEmails(d.report_to) || null, report_cc: cleanEmails(d.report_cc) || null };
       const bad = [...splitEmails(d.report_to), ...splitEmails(d.report_cc)].filter(x => !EMAIL_RE.test(x));
       if (bad.length) return toast('E-mail invalide : ' + bad.join(', '), 'err');
@@ -1046,7 +1274,7 @@
   }
   ACTIONS['new-charter'] = () => {
     const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
-    charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '' });
+    charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '', fuel_company: boatName(), fuel_by_boat: true });
   };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
@@ -1112,6 +1340,7 @@
           </div>
         </section>
       </div>
+      ${invoicePanel(c, B, locked)}
       <section class="panel">
         <div class="panel-head"><h2>Signatures</h2></div>
         <div class="sig-grid">
@@ -1125,6 +1354,37 @@
       </section>`);
   }
 
+  function invoicePanel(c, B, locked) {
+    const draft = boatInvoiceDraft(B), issued = B.invoices[0];
+    const cancelled = S.invoices.filter(i => i.charter_id === c.id && i.status === 'cancelled');
+    const profileOk = !!(PROFILE.legal_name || PROFILE.short_name !== 'Boat') && !!PROFILE.address;
+    if (!draft.lines.length && !issued && !cancelled.length) return `<section class="panel"><div class="panel-head"><h2>Facture du bateau</h2></div>
+      <p class="muted small">Aucune ligne facturée par le bateau (${esc(boatName())}). Cochez « Fuel facturé par le bateau » dans <i>Modifier</i>, ou choisissez « ${esc(boatName())} » comme fournisseur d’une dépense.</p></section>`;
+    const changed = issued && draft.fingerprint !== issued.fingerprint;
+    return `<section class="panel">
+      <div class="panel-head"><h2>Facture du bateau (${esc(boatName())})</h2>
+        <div class="row-gap">
+          ${!issued ? `<button class="btn btn-ghost btn-sm" data-act="inv-draft">${ICON.eye}Aperçu (brouillon)</button>` : ''}
+          ${locked && (!issued || changed) && draft.lines.length ? `<button class="btn btn-primary btn-sm" data-act="inv-issue">${ICON.file}${issued ? 'Ré-émettre' : 'Émettre la facture'}</button>` : ''}
+        </div></div>
+      ${!profileOk ? `<div class="banner banner-info small">${ICON.edit}<div>Complétez la fiche du bateau (raison sociale, adresse…) dans <a href="#/settings">Paramètres</a> avant la clôture : elle figure sur la facture.</div></div>` : ''}
+      ${issued ? `<div class="inv-card"><div><div class="inv-num">N° ${esc(issued.number)}</div>
+          <div class="muted small">Émise le ${fdate(issued.issue_date)} · ${issued.lines.length} ligne(s)</div></div>
+          <div class="inv-total">${money(issued.total_ttc, issued.currency)}</div>
+          <div>${invoiceLink(issued)}</div></div>
+          ${changed ? `<p class="small warn">La compta a changé depuis l’émission : ${locked ? 'cliquez sur « Ré-émettre » pour annuler cette facture et en émettre une nouvelle.' : 'une nouvelle facture remplacera celle-ci à la prochaine clôture.'}</p>` : ''}`
+        : `<p class="small muted">${draft.lines.length} ligne(s) · total ${money(draft.total_ttc, c.currency)} TTC. ${locked ? 'Cliquez sur « Émettre la facture ».' : 'La facture sera numérotée et émise automatiquement à la clôture de la compta, puis visible par le client.'}</p>`}
+      ${cancelled.length ? `<p class="small muted">Factures annulées : ${cancelled.map(i => `${invoiceLink(i)}`).join(' ')}</p>` : ''}
+    </section>`;
+  }
+  ACTIONS['inv-draft'] = () => downloadInvoice({ ...boatInvoiceDraft(buildBundle(S, charterById(CURRENT))), issue_date: today() }, true);
+  ACTIONS['inv-issue'] = async b => {
+    busy(b, true);
+    try { const r = await ensureBoatInvoice(charterById(CURRENT)); await reload(); notifyCharter(CURRENT); route();
+      toast(r.inv ? `Facture ${r.inv.number} émise${r.replaced ? ` (remplace ${r.replaced})` : ''}` : 'Aucune ligne à facturer'); }
+    catch (e) { toast(errMsg(e), 'err'); busy(b, false); }
+  };
+
   ACTIONS.print = () => window.print();
   ACTIONS['zip-charter'] = b => downloadReportZip(buildBundle(S, charterById(CURRENT)), b);
   ACTIONS['xlsx-charter'] = () => { const c = charterById(CURRENT); exportCharterXlsx(buildBundle(S, c)); };
@@ -1133,6 +1393,17 @@
   const splitEmails = s => String(s || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
   const cleanEmails = s => splitEmails(s).join(', ');
   const reportUrl = c => `${location.origin}${location.pathname}?r=${c.report_token}`;
+
+  // Liens de composition : messagerie par défaut (mailto) ou Gmail
+  function composeUrls({ to = '', cc = '', subject = '', body = '' }) {
+    const clean = s => String(s || '').replace(/\s+/g, '');
+    const q = [];
+    if (cc) q.push('cc=' + encodeURIComponent(clean(cc)));
+    q.push('subject=' + encodeURIComponent(subject), 'body=' + encodeURIComponent(body));
+    const g = new URLSearchParams({ view: 'cm', fs: '1', to: clean(to), su: subject, body });
+    if (cc) g.set('cc', clean(cc));
+    return { mailto: `mailto:${clean(to)}?${q.join('&')}`, gmail: `https://mail.google.com/mail/?${g.toString()}` };
+  }
 
   function statusBadge(c) {
     if (c.status === 'signed') return '<span class="badge badge-ok">Signée</span>';
@@ -1154,7 +1425,8 @@
         <label class="field"><span>Message</span><textarea rows="${kind === 'closed' ? 9 : 5}" id="share-msg">${esc(msg)}</textarea></label>
         <div class="row-gap wrap">
           <button class="btn btn-primary" data-copy>${ICON.copy}Copier le message</button>
-          <a class="btn btn-ghost" data-mail href="#">${ICON.mail}E-mail</a>
+          <a class="btn btn-ghost" data-gmail href="#">${ICON.mail}Gmail</a>
+          <a class="btn btn-ghost" data-mail href="#">${ICON.mail}Autre messagerie</a>
           <a class="btn btn-ghost" data-wa href="#" target="_blank" rel="noopener">WhatsApp</a>
           <a class="btn btn-ghost" href="${esc(url)}" target="_blank" rel="noopener">${ICON.eye}Ouvrir le lien</a>
         </div>
@@ -1163,6 +1435,7 @@
     });
     const text = () => $('#share-msg', m).value;
     $('[data-mail]', m).onclick = e => { e.preventDefault(); location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text())}`; };
+    $('[data-gmail]', m).onclick = e => { e.preventDefault(); window.open(composeUrls({ subject, body: text() }).gmail, '_blank', 'noopener'); };
     $('[data-wa]', m).onclick = e => { e.preventDefault(); window.open(`https://wa.me/?text=${encodeURIComponent(text())}`, '_blank', 'noopener'); };
     $('[data-copy]', m).onclick = async () => {
       try { await navigator.clipboard.writeText(text()); toast('Message copié'); }
@@ -1191,7 +1464,7 @@ Veuillez trouver ci-dessous le rapport complet du charter « ${c.title} » (${fd
 
 • APA reçu : ${money(st.apa, cur)}
 • Total des dépenses : ${money(st.total, cur)}${st.fuelTotal ? `\n  dont fuel : ${money(st.fuelTotal, cur)} (${fmt(st.fuelLiters)} L)` : ''}${st.tipsAuto ? `\n  dont tips équipage : ${money(st.tipsAuto, cur)}` : ''}
-• Solde APA : ${money(st.balance, cur)} (${st.balance >= 0 ? 'à rembourser au client' : 'à régler par le client'})
+• Solde APA : ${money(st.balance, cur)} (${st.balance >= 0 ? 'à rembourser au client' : 'à régler par le client'})${B.invoices.length ? `\n• Facture émise par ${boatName()} : n° ${B.invoices.map(i => `${i.number} (${money(i.total_ttc, i.currency)})`).join(', ')}` : ''}
 
 Rapport complet (compta signée, détail fuel et ${nFiles} facture(s) téléchargeables, export Excel et PDF) :
 ${url}
@@ -1201,7 +1474,7 @@ ${c.master_signed_name || 'Le Capitaine'}
 ${yacht}`;
     const m = openModal({
       title: 'Envoyer le rapport', wide: true,
-      body: `<p class="muted">Le rapport est accessible uniquement par ce lien, et seulement parce que la compta est signée. Votre messagerie s’ouvre avec le message prêt : il ne vous reste qu’à appuyer sur Envoyer.</p>
+      body: `<p class="muted">Le rapport est accessible uniquement par ce lien, et seulement parce que la compta est signée. Le message s’ouvre prêt à partir dans Gmail ou votre messagerie habituelle : il ne vous reste qu’à appuyer sur Envoyer.</p>
         <div class="form-grid">
           <label class="field"><span>À : représentant fiscal</span><input id="rp-to" value="${esc(c.report_to || '')}" inputmode="email" placeholder="fiscal@exemple.com"></label>
           <label class="field"><span>Cc : brokers</span><input id="rp-cc" value="${esc(c.report_cc || '')}" inputmode="email" placeholder="broker1@…, broker2@…"></label>
@@ -1209,7 +1482,8 @@ ${yacht}`;
           <label class="field span-2"><span>Message</span><textarea id="rp-body" rows="12">${esc(body)}</textarea></label>
         </div>
         <div class="row-gap wrap">
-          <button class="btn btn-gold" data-send>${ICON.mail}Ouvrir dans ma messagerie</button>
+          <button class="btn btn-gold" data-send="gmail">${ICON.mail}Envoyer avec Gmail</button>
+          <button class="btn btn-ghost" data-send="mailto">${ICON.mail}Autre messagerie</button>
           <button class="btn btn-ghost" data-copy>${ICON.copy}Copier le message</button>
           <button class="btn btn-ghost" data-zip>${ICON.file}Télécharger le rapport (.zip)</button>
           <a class="btn btn-ghost" href="${esc(url)}" target="_blank" rel="noopener">${ICON.eye}Voir le rapport</a>
@@ -1228,17 +1502,15 @@ ${yacht}`;
       }
       return { to, cc };
     };
-    $('[data-send]', m).onclick = async () => {
+    $$('[data-send]', m).forEach(btn => btn.onclick = async () => {
       const r = await saveEmails(); if (!r) return;
-      const q = [];
-      if (r.cc) q.push('cc=' + encodeURIComponent(r.cc.replace(/\s+/g, '')));
-      q.push('subject=' + encodeURIComponent(val('rp-subject')), 'body=' + encodeURIComponent(val('rp-body')));
-      location.href = `mailto:${r.to.replace(/\s+/g, '')}?${q.join('&')}`;
+      const u = composeUrls({ to: r.to, cc: r.cc, subject: val('rp-subject'), body: val('rp-body') });
+      if (btn.dataset.send === 'gmail') window.open(u.gmail, '_blank', 'noopener'); else location.href = u.mailto;
       try { await api.update('charters', c.id, { report_sent_at: new Date().toISOString() }); } catch { /* */ }
       await reload(); setTimeout(() => { closeModal(); route(); toast('Message préparé dans votre messagerie'); }, 600);
-    };
+    });
     $('[data-copy]', m).onclick = async () => {
-      const txt = val('rp-body');
+      const txt = `À : ${cleanEmails(val('rp-to'))}\n${val('rp-cc') ? `Cc : ${cleanEmails(val('rp-cc'))}\n` : ''}Objet : ${val('rp-subject')}\n\n${val('rp-body')}`;
       try { await navigator.clipboard.writeText(txt); } catch { $('#rp-body', m).select(); document.execCommand('copy'); }
       toast('Message copié');
     };
@@ -1250,14 +1522,22 @@ ${yacht}`;
     const warn = [];
     if (tipsEnabled(c) && !c.charter_fee) warn.push('Le <b>charter fee</b> n’est pas renseigné : le client ne pourra saisir qu’un montant de tips personnalisé.');
     if (!S.voyages.some(v => v.charter_id === c.id)) warn.push('Aucun voyage fuel n’est lié à ce charter : aucun fuel ne sera facturé.');
+    const draft = boatInvoiceDraft(buildBundle(S, c));
+    if (draft.lines.length && !PROFILE.address) warn.push('La fiche du bateau (adresse de facturation) n’est pas complétée dans <b>Paramètres</b> : la facture sera incomplète.');
+    if (draft.lines.length && !c.client_address) warn.push('L’adresse de facturation du client n’est pas renseignée (bouton Modifier).');
     const ok = await confirmDialog(`Clôturer la compta de « ${esc(c.title)} » ?<br><br>
       Total : <b>${money(st.total, c.currency)}</b> · Solde APA : <b>${money(st.balance, c.currency)}</b><br><br>
       Les dépenses seront verrouillées et le client pourra signer${tipsEnabled(c) ? ' (en choisissant ses tips)' : ' (sans fenêtre de tips)'}.
+      ${draft.lines.length ? `<br>Une facture de <b>${esc(boatName())}</b> (${money(draft.total_ttc, c.currency)}) sera émise automatiquement.` : ''}
       ${warn.length ? `<br><br><span class="warn">⚠ ${warn.join('<br>⚠ ')}</span>` : ''}`, 'Clôturer', false);
     if (!ok) return;
     try {
       await api.update('charters', c.id, { status: 'closed', closed_at: new Date().toISOString() });
-      await reload(); notifyCharter(c.id); route(); toast('Compta clôturée');
+      await reload();
+      let invMsg = '';
+      try { const r = await ensureBoatInvoice(charterById(c.id)); if (r.inv && r.changed) invMsg = ` · facture ${r.inv.number} émise`; await reload(); }
+      catch (e) { toast('Facture non émise : ' + errMsg(e), 'err'); }
+      notifyCharter(c.id); route(); toast('Compta clôturée' + invMsg);
       messageModal(charterById(c.id), 'closed');
     } catch (e) { toast(errMsg(e), 'err'); }
   };
@@ -1311,7 +1591,7 @@ ${yacht}`;
       body: `<form class="form-grid" id="f-exp">
         <label class="field"><span>N°</span><input type="number" name="num" value="${esc(e.num ?? nextNum)}"></label>
         <label class="field"><span>Date</span><input type="date" name="date" value="${esc(e.date || today())}"></label>
-        <label class="field"><span>Fournisseur</span><input name="company" value="${esc(e.company || '')}" list="dl-companies"></label>
+        <label class="field"><span>Fournisseur</span><input name="company" value="${esc(e.company || '')}" list="dl-companies" autocomplete="off"></label>
         <label class="field"><span>Réf. facture</span><input name="invoice_ref" value="${esc(e.invoice_ref || '')}" placeholder="Invoice / Receipt / n°"></label>
         <label class="field"><span>Catégorie</span><select name="category">${opts(CATEGORIES, e.category || 'Food')}</select></label>
         <label class="field"><span>Paiement</span><select name="method">${opts(METHODS, e.method || 'Credit Card APA')}</select></label>
@@ -1322,7 +1602,9 @@ ${yacht}`;
         <div class="field"><span>Facture (PDF / photo)</span>
           ${e.file_path ? `<div class="current-file">${fileLink(e.file_path, e.file_name || 'Facture')}<label class="check small"><input type="checkbox" name="remove_file"> retirer</label></div>` : ''}
           <input type="file" name="file" accept="application/pdf,image/*"></div>
-        <datalist id="dl-companies">${[...new Set(S.expenses.map(x => x.company).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+        <label class="check span-2 boat-toggle"><input type="checkbox" name="billed_by_boat" ${e.billed_by_boat ? 'checked' : ''}>
+          <span><b>Facturée par le bateau (${esc(boatName())})</b> — incluse dans la facture émise automatiquement à la clôture</span></label>
+        <datalist id="dl-companies"><option value="${esc(boatName())}">${esc(boatName())} — le bateau (facture auto)</option>${[...new Set([...(PROFILE.suppliers || []), ...S.expenses.map(x => x.company)].filter(x => x && !isBoatName(x)))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>
       </form>`,
       footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
@@ -1334,12 +1616,15 @@ ${yacht}`;
       if (!totalTouched && ht !== null) f.total.value = r2(ht + (vat || 0));
     };
     f.amount_ht.addEventListener('input', syncTotal); f.vat.addEventListener('input', syncTotal);
+    f.company.addEventListener('input', () => { if (isBoatName(f.company.value)) f.billed_by_boat.checked = true; });
+    f.company.addEventListener('change', () => { f.billed_by_boat.checked = isBoatName(f.company.value) || (f.billed_by_boat.checked && !f.company.value); });
     $('[data-ok]', m).onclick = async ev => {
       if (!f.reportValidity()) return;
       const d = new FormData(f);
       const row = { charter_id: c.id, num: toNum(d.get('num')), date: d.get('date') || null, company: d.get('company') || null,
         invoice_ref: d.get('invoice_ref') || null, category: d.get('category'), description: d.get('description') || null,
-        amount_ht: toNum(d.get('amount_ht')), vat: toNum(d.get('vat')), total: r2(toNum(d.get('total')) || 0), method: d.get('method') };
+        amount_ht: toNum(d.get('amount_ht')), vat: toNum(d.get('vat')), total: r2(toNum(d.get('total')) || 0), method: d.get('method'),
+        billed_by_boat: !!d.get('billed_by_boat') };
       busy(ev.currentTarget, true);
       try {
         const file = f.file.files[0];
