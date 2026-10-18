@@ -460,7 +460,11 @@
     setTimeout(() => el.classList.add('show'), 10);
     setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, type === 'err' ? 6000 : 3000);
   }
-  const errMsg = e => (e && (e.message || e.error_description || e.details)) || String(e);
+  const errMsg = e => {
+    const m = (e && (e.message || e.error_description || e.details)) || String(e);
+    const col = /(broker_fee_pct|auto_kind|auto_ref|'fee')/.exec(m);
+    return col ? `Base de données à mettre à jour : exécutez le fichier « maj-frais.sql » dans Supabase (SQL Editor). (${m})` : m;
+  };
 
   function openModal({ title, body, footer = '', wide = false, onMount }) {
     const root = $('#modal-root');
@@ -1572,6 +1576,7 @@
         <label class="field"><span>Début</span><input type="date" name="start_date" value="${esc(c.start_date || '')}"></label>
         <label class="field"><span>Fin</span><input type="date" name="end_date" value="${esc(c.end_date || '')}"></label>
         <label class="field"><span>APA reçu</span><input type="number" step="0.01" name="apa_paid" value="${esc(c.apa_paid ?? '')}"></label>
+        <label class="field"><span>Frais broker sur l’APA (%) <small>(ligne de dépense auto, 0 = aucune)</small></span><input type="number" step="0.01" min="0" name="broker_fee_pct" value="${esc(c.broker_fee_pct ?? 0.4)}"></label>
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
         ${!S.voyages.some(v => v.charter_id === c.id) ? `<label class="check span-2 boat-toggle"><input type="checkbox" name="auto_voyage" ${c.auto_voyage !== false ? 'checked' : ''}>
           <span><b>Créer automatiquement le voyage dans le fuel booklet</b> le jour du début du charter (nom, dates, ROB au départ calculé ce jour-là)</span></label>` : ''}
@@ -1616,7 +1621,7 @@
       if (!f.reportValidity()) return;
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
-        end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
+        end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, broker_fee_pct: toNum(d.broker_fee_pct) ?? 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
         vat_country: (d.vat_country_sel === '__other' ? (d.vat_country_other || '').trim() : d.vat_country_sel) || null, vat_rate: toNum(d.vat_rate) ?? 0,
         fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, fuel_by_boat: !!d.fuel_by_boat,
         ...(S.voyages.some(v => v.charter_id === c.id) ? {} : { auto_voyage: !!d.auto_voyage }),
@@ -1631,6 +1636,7 @@
         // voyage charter pas encore terminé : suit les dates du charter
         const lv = S.voyages.find(v => v.charter_id === saved.id && toNum(v.rob_after) === null);
         if (!isNew && lv && (lv.start_date !== row.start_date || lv.end_date !== row.end_date)) { await api.update('voyages', lv.id, { start_date: row.start_date, end_date: row.end_date }); await reload(); }
+        try { if (await syncBrokerFee(charterById(saved.id))) await reload(); } catch (e) { toast('Frais broker : ' + errMsg(e), 'err'); }
         await autoCreateDueVoyages();
         closeModal(); notifyCharter(saved.id);
         if (isNew) location.hash = `#/charter/${saved.id}`; else route();
@@ -1648,10 +1654,28 @@
       } catch (e) { toast(errMsg(e), 'err'); }
     };
   }
+  // Ligne de dépense automatique « Broker fee » = APA reçu × % (suit l'APA et le taux du charter)
+  const nextExpenseNum = cid => Math.max(1, ...S.expenses.filter(x => x.charter_id === cid).map(x => x.num || 0)) + 1;
+  async function syncBrokerFee(c) {
+    if (!c || (c.status && c.status !== 'open')) return false;
+    const pct = toNum(c.broker_fee_pct) ?? 0, apa = toNum(c.apa_paid) || 0, amount = r2(apa * pct / 100);
+    const ex = S.expenses.find(e => e.charter_id === c.id && e.auto_kind === 'broker_fee');
+    if (!(amount > 0)) { if (ex) { await api.remove('expenses', ex.id); return true; } return false; }
+    const description = `Broker fee ${String(pct).replace(".", ",")} % on APA received (${money(apa, c.currency)})`;
+    if (ex) {
+      const date = c.start_date || ex.date;
+      if (r2(ex.total) === amount && ex.description === description && ex.date === date) return false;
+      await api.update('expenses', ex.id, { total: amount, description, date }); return true;
+    }
+    await api.insert('expenses', { charter_id: c.id, num: nextExpenseNum(c.id), date: c.start_date || today(), company: 'Broker',
+      category: 'Bank Fee', description, amount_ht: null, vat: null, total: amount, method: 'Bank Fee', auto_kind: 'broker_fee' });
+    return true;
+  }
+
   ACTIONS['new-charter'] = () => {
     const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
     charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '', fuel_company: boatName(), fuel_by_boat: true,
-      vat_country: last?.vat_country || 'France', vat_rate: last?.vat_rate ?? 20, auto_voyage: true });
+      vat_country: last?.vat_country || 'France', vat_rate: last?.vat_rate ?? 20, auto_voyage: true, broker_fee_pct: last?.broker_fee_pct ?? 0.4 });
   };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
@@ -1714,7 +1738,7 @@
           <div class="panel-head"><h2>Répartition</h2></div>
           ${renderCategories(B, st)}
           <div class="cash-sum"><div class="panel-head sub"><h3>Espèces (Cash ATM)</h3>${!locked ? `<button class="btn btn-ghost btn-sm" data-act="new-cash">${ICON.plus}Retrait</button>` : ''}</div>
-            ${B.cash.map(w => `<div class="kv"><span>${fdate(w.date)} · ${esc(w.location || '')}</span><b>${money(w.amount, c.currency)}
+            ${B.cash.map(w => `<div class="kv"><span>${fdate(w.date)} · ${esc(w.location || '')}${toNum(w.fee) ? ` <small class="muted">(frais ATM ${money(w.fee, c.currency)})</small>` : ''}</span><b>${money(w.amount, c.currency)}
               ${!locked ? `<button class="icon-btn danger xs" data-act="del-cash" data-id="${w.id}" title="Supprimer">${ICON.trash}</button>` : ''}</b></div>`).join('')}
             <div class="kv"><span>Total retraits</span><b>${money(st.cashWithdrawn, c.currency)}</b></div>
             <div class="kv"><span>Dépenses payées « Cash APA »</span><b>${money(st.cashSpent, c.currency)}</b></div>
@@ -2135,20 +2159,28 @@ ${yacht}`;
       title: 'Retrait d’espèces (APA)',
       body: `<form class="form-grid" id="f-cash"><label class="field"><span>Date</span><input type="date" name="date" value="${today()}"></label>
         <label class="field"><span>Lieu</span><input name="location"></label>
-        <label class="field span-2"><span>Montant</span><input type="number" step="0.01" name="amount" required></label></form>`,
+        <label class="field"><span>Montant retiré</span><input type="number" step="0.01" name="amount" required></label>
+        <label class="field"><span>Frais ATM <small>(ajoutés en dépense « ATM fee »)</small></span><input type="number" step="0.01" min="0" name="fee" placeholder="0,00"></label></form>`,
       footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
     $('[data-ok]', m).onclick = async ev => {
       const f = $('#f-cash', m); if (!f.reportValidity()) return;
       busy(ev.currentTarget, true);
-      try { await api.insert('cash_withdrawals', { charter_id: CURRENT, date: f.date.value || null, location: f.location.value || null, amount: toNum(f.amount.value) });
-        await reload(); closeModal(); notifyCharter(CURRENT); route(); }
+      try {
+        const fee = r2(toNum(f.fee.value) || 0), date = f.date.value || null, location = f.location.value || null;
+        const w = await api.insert('cash_withdrawals', { charter_id: CURRENT, date, location, amount: toNum(f.amount.value), ...(fee > 0 ? { fee } : {}) });
+        if (fee > 0) await api.insert('expenses', { charter_id: CURRENT, num: nextExpenseNum(CURRENT), date, company: location ? `ATM ${location}` : 'ATM',
+          category: 'ATM fee', description: `ATM fee — cash withdrawal ${money(w.amount, charterById(CURRENT).currency)}`, amount_ht: null, vat: null,
+          total: fee, method: 'ATM Fee', auto_kind: 'atm_fee', auto_ref: w.id });
+        await reload(); closeModal(); notifyCharter(CURRENT); route(); if (fee > 0) toast('Retrait et frais ATM ajoutés'); }
       catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
     };
   };
   ACTIONS['del-cash'] = async b => {
-    if (!(await confirmDialog('Supprimer ce retrait ?', 'Supprimer'))) return;
-    try { await api.remove('cash_withdrawals', b.dataset.id); await reload(); notifyCharter(CURRENT); route(); } catch (e) { toast(errMsg(e), 'err'); }
+    const fees = S.expenses.filter(e => e.auto_kind === 'atm_fee' && e.auto_ref === b.dataset.id);
+    if (!(await confirmDialog(`Supprimer ce retrait${fees.length ? ' et sa dépense « ATM fee »' : ''} ?`, 'Supprimer'))) return;
+    try { for (const e of fees) await api.remove('expenses', e.id);
+      await api.remove('cash_withdrawals', b.dataset.id); await reload(); notifyCharter(CURRENT); route(); } catch (e) { toast(errMsg(e), 'err'); }
   };
 
   // ---------------- Lier un voyage au charter ----------------
