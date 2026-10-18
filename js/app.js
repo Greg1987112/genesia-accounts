@@ -674,17 +674,17 @@
   function boatInvoiceDraft(B, prof = PROFILE) {
     const c = B.charter, st = computeStatement(B), rateDefault = toNum(prof.vat_rate) || 0;
     // ligne : HT + TVA = TTC (le TTC est toujours le montant de la compta)
-    const mk = (designation, qty, unit, ht, ttc) => {
+    const mk = (designation, qty, unit, ht, ttc, unitPrice) => {
       ht = r2(ht); ttc = r2(ttc);
       const vat = r2(ttc - ht), rate = ht ? r2(vat / ht * 100) : 0;
-      return { designation, qty, unit, rate, unit_price_ht: qty ? r3(ht / qty) : ht, total_ht: ht, total_vat: vat, total_ttc: ttc };
+      return { designation, qty, unit, rate, unit_price_ht: unitPrice ?? (qty ? r3(ht / qty) : ht), total_ht: ht, total_vat: vat, total_ttc: ttc };
     };
     const lines = [];
     // Fuel : une ligne par soutage consommé, au prix payé (HT si payé HT, sinon HT + TVA du fournisseur)
     if (c.fuel_by_boat !== false) st.fuelLines.forEach(f => {
       const ht = f.paidHt ? f.amount : (toNum(f.liters) || 0) * (toNum(f.price_ht_l) || 0);
       lines.push(mk(`${f.fuel_type || 'Gasoil'} — ${c.fuel_description || 'MEs & DGs'} — soutage n°${f.bunker_num ?? ''} du ${fdate(f.bunker_date)}${f.town ? ` (${f.town})` : ''}${f.paidHt ? ' — payé HT' : ''}`,
-        toNum(f.liters), 'L', ht, f.amount));
+        toNum(f.liters), 'L', ht, f.amount, f.paidHt ? f.price : toNum(f.price_ht_l)));
     });
     B.expenses.filter(e => e.billed_by_boat).forEach(e => {
       const ttc = toNum(e.total) || 0;
@@ -717,7 +717,7 @@
     return { inv, changed: true, replaced: current?.number };
   }
 
-  const pdfText = s => String(s ?? '').replace(/[  ]/g, ' ').replace(/→/g, '->').replace(/[^\x00-\xff€—–’‘“”…•]/g, '');
+  const pdfText = s => String(s ?? '').replace(/\u03bc/g, '\u00b5').replace(/[  ]/g, ' ').replace(/→/g, '->').replace(/[^\x00-\xff€—–’‘“”…•]/g, '');
   const pdfMoney = (v, cur) => pdfText(money(v, cur));
 
   async function invoicePdf(inv, draft = false) {
