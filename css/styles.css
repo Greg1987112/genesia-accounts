@@ -381,3 +381,15 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .row-cancelled td.actions, .row-cancelled td:nth-last-child(2) { text-decoration: none; }
 @media screen and (max-width: 760px) { .kpis-3 { grid-template-columns: 1fr 1fr; } .nav { overflow-x: auto; } .nav a { flex: 1 0 auto; padding: 7px 10px; } }
 @media screen and (max-width: 420px) { .nav a { font-size: .82rem; padding: 7px 8px; } }
+
+/* ---------- TVA estimée ---------- */
+.kpis-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ht-box { background: var(--warn-soft); border-radius: 10px; padding: 10px 12px; }
+.ht-fields { margin-top: 10px; }
+.detect { display: flex; gap: 8px; margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid var(--line); }
+.detect.is-ht { border-color: #f1dcb4; }
+.detect svg { flex: none; color: var(--gold); }
+.tfoot-vat td { border-top: 0 !important; color: var(--warn); }
+.vat-summary div { background: var(--warn-soft); }
+.vat-summary span { color: var(--warn) !important; }
+@media screen and (max-width: 760px) { .kpis-6 { grid-template-columns: 1fr 1fr; } }

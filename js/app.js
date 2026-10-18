@@ -12,6 +12,10 @@
   const DEMO = !CFG.supabaseUrl || /VOTRE/i.test(CFG.supabaseUrl) || !CFG.supabaseAnonKey || /VOTRE/i.test(CFG.supabaseAnonKey);
   const SUPABASE_JS = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js';
   const XLSX_JS = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  const PDFJS_JS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+  const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  // Pays de début du charter → taux de TVA appliqué aux montants payés HT (modifiable par charter)
+  const VAT_COUNTRIES = [['France', 20], ['Italie', 22], ['Espagne', 21], ['Croatie', 13], ['Grèce', 0], ['Monaco', 20], ['Autre', null]];
   const JSPDF_JS = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
   const JSZIP_JS = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
   const YACHT = CFG.yachtName || 'Motor Yacht';
@@ -91,6 +95,8 @@
       continue: 'Continuer', back: 'Retour', tipsLine: 'Tips équipage', ofCharterFee: 'du charter fee',
       tipsChosen: 'Tips', totalToSign: 'Total à approuver', charterFee: 'Charter fee', tipsInvalid: 'Montant de tips invalide.',
       step: 'Étape', reportTitle: 'Rapport de charter', zipAll: 'Toutes les factures (.zip)',
+      vatEstimated: 'TVA estimée', apaLeftInclVat: 'Solde APA après TVA estimée', vatEstNote: 'Montant payé HT : la TVA sera facturée par le représentant fiscal après envoi du rapport',
+      htChip: 'HT', apaLeft: 'Solde APA',
       boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
     },
@@ -123,6 +129,8 @@
       continue: 'Continue', back: 'Back', tipsLine: 'Crew gratuity', ofCharterFee: 'of the charter fee',
       tipsChosen: 'Gratuity', totalToSign: 'Total to approve', charterFee: 'Charter fee', tipsInvalid: 'Invalid gratuity amount.',
       step: 'Step', reportTitle: 'Charter report', zipAll: 'All invoices (.zip)',
+      vatEstimated: 'VAT estimated', apaLeftInclVat: 'APA left including VAT estimated', vatEstNote: 'Paid excl. VAT: this VAT will be invoiced by the fiscal representative once the report is sent',
+      htChip: 'excl. VAT', apaLeft: 'APA left',
       boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
     },
@@ -161,6 +169,14 @@
     };
   }
 
+  // TVA estimée d'une dépense payée (en partie) HT : saisie manuelle, sinon base HT × taux du charter
+  const charterVatRate = c => toNum(c.vat_rate) ?? 0;
+  const vatEstOf = (e, c) => {
+    if (toNum(e.vat_est) != null) return r2(e.vat_est);
+    const base = toNum(e.vat_est_base);
+    return base ? r2(base * charterVatRate(c) / 100) : 0;
+  };
+
   function computeStatement(B, opts = {}) {
     const c = B.charter;
     const tipsAuto = r2(toNum(opts.tipsAmount !== undefined ? opts.tipsAmount : c.tips_amount) || 0);
@@ -185,7 +201,8 @@
     const tips = sum(B.expenses.filter(e => (e.category || '').toUpperCase() === 'TIPS'), e => e.total) + tipsAuto;
     const fee = toNum(c.charter_fee);
     return { tipsAuto, tipsAutoPct, fuelLines, fuelTotal, fuelLiters, expTotal, total, apa, balance, cashWithdrawn, cashSpent,
-      cashInHand: r2(cashWithdrawn - cashSpent), byCat, tips, tipsPct: fee ? tips / fee : null };
+      cashInHand: r2(cashWithdrawn - cashSpent), byCat, tips, tipsPct: fee ? tips / fee : null,
+      vatEst: r2(sum(B.expenses, e => vatEstOf(e, c))), get balanceInclVat() { return r2(this.balance - this.vatEst); } };
   }
 
   function lotUsage(S) {
@@ -509,13 +526,17 @@
   function renderKpis(B, st) {
     const cur = B.charter.currency;
     const pos = st.balance >= 0;
-    return `<div class="kpis">
+    return `<div class="kpis ${st.vatEst ? 'kpis-6' : ''}">
       <div class="kpi"><div class="kpi-label">${t('apaReceived')}</div><div class="kpi-value">${money(st.apa, cur)}</div></div>
       <div class="kpi"><div class="kpi-label">${t('totalExpenses')}</div><div class="kpi-value">${money(st.total, cur)}</div></div>
       <div class="kpi kpi-balance ${pos ? 'is-pos' : 'is-neg'}"><div class="kpi-label">${t('apaBalance')}</div>
         <div class="kpi-value">${money(st.balance, cur)}</div><div class="kpi-sub">${pos ? t('toRefund') : t('toPay')}</div></div>
       <div class="kpi"><div class="kpi-label">${t('fuelBilled')}</div><div class="kpi-value">${money(st.fuelTotal, cur)}</div>
         <div class="kpi-sub">${fmt(st.fuelLiters)} L</div></div>
+      ${st.vatEst ? `<div class="kpi kpi-warn"><div class="kpi-label">${t('vatEstimated')}</div><div class="kpi-value">${money(st.vatEst, cur)}</div>
+        <div class="kpi-sub">${fmt(charterVatRate(B.charter), charterVatRate(B.charter) % 1 ? 1 : 0)} %${B.charter.vat_country ? ' · ' + esc(B.charter.vat_country) : ''}</div></div>
+      <div class="kpi kpi-balance ${st.balanceInclVat >= 0 ? 'is-pos' : 'is-neg'}"><div class="kpi-label">${t('apaLeftInclVat')}</div>
+        <div class="kpi-value">${money(st.balanceInclVat, cur)}</div><div class="kpi-sub">${st.balanceInclVat >= 0 ? t('toRefund') : t('toPay')}</div></div>` : ''}
     </div>`;
   }
 
@@ -548,7 +569,7 @@
         <td data-label="${t('num')}">${esc(e.num ?? '')}</td><td data-label="${t('date')}">${fdate(e.date)}</td>
         <td data-label="${t('supplier')}">${esc(e.company)}</td><td data-label="${t('ref')}">${esc(e.invoice_ref)}</td>
         <td data-label="${t('category')}"><span class="chip">${esc(e.category)}</span></td>
-        <td data-label="${t('description')}">${esc(e.description)}</td>
+        <td data-label="${t('description')}">${esc(e.description)}${vatEstOf(e, c) ? ` <span class="chip chip-warn" title="${t('vatEstNote')}">${t('htChip')} ${money(e.vat_est_base ?? '', cur)} · ${t('vatEstimated')} ${money(vatEstOf(e, c), cur)}</span>` : ''}</td>
         <td data-label="${t('exclVat')}" class="num">${e.amount_ht != null ? money(e.amount_ht, cur) : ''}</td>
         <td data-label="${t('vat')}" class="num">${e.vat != null ? money(e.vat, cur) : ''}</td>
         <td data-label="${t('total')}" class="num strong">${money(e.total, cur)}</td>
@@ -574,7 +595,8 @@
       <th>${t('description')}</th><th class="num">${t('exclVat')}</th><th class="num">${t('vat')}</th><th class="num">${t('total')}</th>
       <th>${t('payment')}</th><th>${t('invoice')}</th>${admin ? '<th></th>' : ''}</tr></thead>
       <tbody>${rows.join('')}${empty}</tbody>
-      <tfoot><tr><td colspan="8" class="tfoot-label">${t('total')}</td><td class="num strong">${money(st.total, cur)}</td><td colspan="${admin ? 3 : 2}"></td></tr></tfoot>
+      <tfoot><tr><td colspan="8" class="tfoot-label">${t('total')}</td><td class="num strong">${money(st.total, cur)}</td><td colspan="${admin ? 3 : 2}"></td></tr>
+      ${st.vatEst ? `<tr class="tfoot-vat"><td colspan="8" class="tfoot-label">${t('vatEstimated')} (${fmt(charterVatRate(c), charterVatRate(c) % 1 ? 1 : 0)} %)</td><td class="num strong">${money(st.vatEst, cur)}</td><td colspan="${admin ? 3 : 2}"></td></tr>` : ''}</tfoot>
     </table></div>`;
   }
 
@@ -786,6 +808,73 @@
   });
 
   // ------------------------------------------------------------------
+  //  Analyse d'une facture fournisseur : mentions de facturation HT (PDF texte)
+  //  et lecture ligne par ligne des factures électroniques italiennes (FatturaPA XML)
+  // ------------------------------------------------------------------
+  const HT_PATTERNS = [
+    [/art(?:icolo|\.)?\s*7\s*[-‐ ]?\s*(?:bis|ter|quater|quinquies|sexies|septies)\b/i, m => m],
+    [/\bart(?:icolo|\.)?\s*7\b(?![,.]?\d)/i, () => 'art. 7'],
+    [/non\s+imponibil\w*/i, m => m], [/fuori\s+campo\s+(?:di\s+applicazione\s+)?(?:dell['’]\s*)?iva/i, m => m],
+    [/inversione\s+contabile/i, m => m], [/reverse\s*[-‐ ]?\s*charge/i, m => m], [/autoliquidation/i, m => m],
+    [/esent[ei]\s+(?:da\s+)?iva|esenzione\s+iva/i, m => m], [/natura\s*:?\s*N[2-6](?:\.\d)?/i, m => m],
+    [/iva\s*0\s*%|vat\s*0\s*%|tva\s*0\s*%/i, m => m], [/exon[ée]ration\s+de\s+tva|exon[ée]r[ée]e?\s+de\s+tva/i, m => m],
+    [/art(?:icle|\.)?\s*(?:262|283)\b/i, m => m], [/vat\s+exempt\w*|exempt\s+from\s+vat/i, m => m],
+    [/operaci[oó]n\s+exenta|inversi[oó]n\s+del\s+sujeto\s+pasivo/i, m => m],
+  ];
+  function findHtMentions(text) {
+    const out = new Set();
+    HT_PATTERNS.forEach(([re, label]) => { const m = text.match(re); if (m) out.add(label(m[0].replace(/\s+/g, ' ').trim())); });
+    return [...out];
+  }
+  async function pdfExtractText(file) {
+    await loadScript(PDFJS_JS);
+    const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+    const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+    let txt = '';
+    for (let i = 1; i <= Math.min(pdf.numPages, 6); i++) {
+      const page = await pdf.getPage(i); const c = await page.getTextContent();
+      txt += c.items.map(it => it.str).join(' ') + '\n';
+    }
+    return txt;
+  }
+  function parseFatturaPA(xmlText) {
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    const all = n => Array.from(doc.getElementsByTagNameNS('*', n));
+    const one = (n, el = doc) => { const x = el.getElementsByTagNameNS('*', n)[0]; return x ? x.textContent.trim() : null; };
+    if (!all('FatturaElettronicaBody').length) return null;
+    const ced = doc.getElementsByTagNameNS('*', 'CedentePrestatore')[0];
+    const company = ced ? (one('Denominazione', ced) || [one('Nome', ced), one('Cognome', ced)].filter(Boolean).join(' ')) : null;
+    const riep = all('DatiRiepilogo').map(r => ({ rate: toNum(one('AliquotaIVA', r)) || 0, natura: one('Natura', r),
+      base: toNum(one('ImponibileImporto', r)) || 0, tax: toNum(one('Imposta', r)) || 0 }));
+    const lines = all('DettaglioLinee').map(l => ({ desc: one('Descrizione', l), amount: toNum(one('PrezzoTotale', l)) || 0,
+      rate: toNum(one('AliquotaIVA', l)) || 0, natura: one('Natura', l) }));
+    const htLines = lines.filter(l => !l.rate);
+    const htBase = r2(riep.length ? sum(riep.filter(r => !r.rate), r => r.base) : sum(htLines, l => l.amount));
+    const ht = r2(riep.length ? sum(riep, r => r.base) : sum(lines, l => l.amount));
+    const vat = r2(sum(riep, r => r.tax));
+    const total = toNum(one('ImportoTotaleDocumento')) ?? r2(ht + vat);
+    const naturas = [...new Set([...riep, ...lines].map(x => x.natura).filter(Boolean))];
+    return { exact: true, htBase, mentions: naturas.map(n => `Natura ${n}`),
+      fill: { company, invoice_ref: one('Numero'), date: one('Data'), amount_ht: ht, vat, total },
+      summary: `Facture électronique italienne : ${lines.length} ligne(s), dont <b>${htLines.length} sans TVA</b> (${money(htBase)}) et ${lines.length - htLines.length} avec TVA. Total ${money(total)}.` };
+  }
+  async function analyseInvoiceFile(file) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.xml') || /xml/.test(file.type)) {
+      const r = parseFatturaPA(await file.text());
+      if (r) return r;
+      const m = findHtMentions(await file.text()); return m.length ? { mentions: m, summary: 'Mention de facturation HT détectée dans le fichier.' } : null;
+    }
+    if (name.endsWith('.pdf') || file.type === 'application/pdf') {
+      const txt = await pdfExtractText(file);
+      if (!txt.trim()) return { summary: 'PDF scanné (image) : pas de texte lisible, cochez « payé HT » si besoin.' };
+      const m = findHtMentions(txt);
+      return m.length ? { mentions: m, summary: 'Mention de facturation HT détectée dans la facture.' } : null;
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------
   //  Export Excel
   // ------------------------------------------------------------------
   async function exportCharterXlsx(B, asArray = false) {
@@ -798,6 +887,11 @@
     B.expenses.forEach(e => rows.push([e.num, fdate(e.date), e.company, e.invoice_ref, e.category, e.description, e.amount_ht, e.vat, toNum(e.total), e.method]));
     if (st.tipsAuto) rows.push(['', fdate((c.client_signed_at || '').slice(0, 10)), 'Crew', '', 'TIPS', `Crew gratuity${st.tipsAutoPct != null ? ` ${st.tipsAutoPct}% of charter fee` : ''}`, '', '', st.tipsAuto, 'APA']);
     rows.push([], ['', '', '', '', '', 'TOTAL', '', '', st.total], [], ['', '', 'APA paid', st.apa], ['', '', 'APA Left', st.balance]);
+    if (st.vatEst) {
+      rows.push(['', '', `VAT estimated (${charterVatRate(c)}%${c.vat_country ? ' ' + c.vat_country : ''})`, st.vatEst], ['', '', 'APA Left including VAT estimated', st.balanceInclVat]);
+      rows.push([], ['VAT estimated detail'], ['Number', 'Company', 'Description', 'Paid excl. VAT', 'VAT estimated']);
+      B.expenses.filter(e => vatEstOf(e, c)).forEach(e => rows.push([e.num, e.company, e.description, toNum(e.vat_est_base), vatEstOf(e, c)]));
+    }
     if (c.charter_fee) rows.push(['', '', 'Charter fee', toNum(c.charter_fee)]);
     if (B.voyages.length) {
       rows.push([], ['Fuel'], ['Voyage', 'ROB before (L)', 'ROB after (L)', 'Consumption (L)']);
@@ -899,7 +993,9 @@
         title: t('closedPopupTitle'),
         body: `<div class="closed-popup"><div class="closed-icon">${ICON.check}</div><p>${t('closedPopupText')}</p>
           <div class="sign-summary"><div><span>${t('totalExpenses')}</span><b>${money(computeStatement(B).total, c.currency)}</b></div>
-          <div><span>${t('apaBalance')}</span><b>${money(computeStatement(B).balance, c.currency)}</b></div></div></div>`,
+          <div><span>${t('apaBalance')}</span><b>${money(computeStatement(B).balance, c.currency)}</b></div></div>
+          ${computeStatement(B).vatEst ? `<div class="sign-summary vat-summary"><div><span>${t('vatEstimated')}</span><b>${money(computeStatement(B).vatEst, c.currency)}</b></div>
+            <div><span>${t('apaLeftInclVat')}</span><b>${money(computeStatement(B).balanceInclVat, c.currency)}</b></div></div>` : ''}</div>`,
         footer: `<button class="btn btn-ghost" data-close>${t('later')}</button><button class="btn btn-gold" data-ok>${ICON.pen}${t('signNow')}</button>`,
       });
       $('[data-ok]', m).onclick = () => { closeModal(); render(); openSign(); };
@@ -1027,11 +1123,14 @@
             <div class="sign-summary ${withTips ? 'three' : ''}">
               ${withTips ? `<div><span>${t('tipsChosen')}</span><b>${money(tp.amount, cur)}</b></div>` : ''}
               <div><span>${t('totalToSign')}</span><b>${money(st.total, cur)}</b></div>
-              <div><span>${t('apaBalance')}</span><b class="${st.balance < 0 ? 'neg' : ''}">${money(st.balance, cur)}</b></div></div>
+              <div><span>${t('apaLeft')}</span><b class="${st.balance < 0 ? 'neg' : ''}">${money(st.balance, cur)}</b></div></div>
+            ${st.vatEst ? `<div class="sign-summary vat-summary"><div><span>${t('vatEstimated')} (${fmt(charterVatRate(c), charterVatRate(c) % 1 ? 1 : 0)} %)</span><b>${money(st.vatEst, cur)}</b></div>
+              <div><span>${t('apaLeftInclVat')}</span><b class="${st.balanceInclVat < 0 ? 'neg' : ''}">${money(st.balanceInclVat, cur)}</b></div></div>
+              <p class="small muted">${t('vatEstNote')}.</p>` : ''}
             <label class="field"><span>${t('yourName')}</span><input name="name" autocomplete="name" required></label>
             <div class="field"><span>${t('signHere')}</span><canvas class="sig-pad" aria-label="${t('signHere')}"></canvas>
               <button type="button" class="btn btn-ghost btn-sm" data-clear>${t('clear')}</button></div>
-            <label class="check"><input type="checkbox" name="approve"> <span>${t('approve')} (${money(st.total, cur)}).</span></label>`,
+            <label class="check"><input type="checkbox" name="approve"> <span>${t('approve')} (${money(st.total, cur)}${st.vatEst ? ` · ${t('apaLeftInclVat')} ${money(st.balanceInclVat, cur)}` : ''}).</span></label>`,
           footer: `${withTips ? `<button class="btn btn-ghost mr-auto" data-back>${ICON.back}${t('back')}</button>` : ''}
             <button class="btn btn-ghost" data-close>${t('cancel')}</button><button class="btn btn-gold" data-ok>${ICON.pen}${t('sign')}</button>`,
         });
@@ -1292,6 +1391,9 @@
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
         <label class="check span-2 tips-toggle"><input type="checkbox" name="tips_prompt" ${tipsEnabled(c) ? 'checked' : ''}>
           <span><b>Proposer les tips au client avant sa signature</b><br><small class="muted">Fenêtre 10 % / 15 % / 20 % du charter fee ou montant libre. Décochez si vous préférez ne pas aborder les tips dans l’app.</small></span></label>
+        <label class="field"><span>Pays de début du charter <small>(TVA)</small></span><select name="vat_country">
+          ${VAT_COUNTRIES.map(([n, r]) => `<option value="${n}" data-rate="${r ?? ''}" ${n === (c.vat_country || 'France') ? 'selected' : ''}>${n}${r != null ? ` — ${r} %` : ''}</option>`).join('')}</select></label>
+        <label class="field"><span>Taux de TVA appliqué (%) <small>(montants payés HT)</small></span><input type="number" step="0.01" min="0" name="vat_rate" value="${esc(c.vat_rate ?? 20)}"></label>
         <label class="field"><span>Devise</span><select name="currency">${opt(['EUR', 'USD', 'GBP', 'CHF'], c.currency || CFG.currency || 'EUR')}</select></label>
         <div class="field-sep span-2">Ligne fuel (calculée automatiquement)</div>
         <label class="field"><span>Société</span><input name="fuel_company" value="${esc(c.fuel_company ?? boatName())}" list="dl-fuel-co"><datalist id="dl-fuel-co"><option value="${esc(boatName())}"></datalist></label>
@@ -1307,12 +1409,15 @@
       footer: `${!isNew ? `<button class="btn btn-ghost danger mr-auto" data-del>${ICON.trash}Supprimer</button>` : ''}
         <button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
+    const fc = $('#f-charter', m);
+    fc.vat_country.addEventListener('change', () => { const r = fc.vat_country.selectedOptions[0].dataset.rate; if (r !== '') fc.vat_rate.value = r; });
     $('[data-ok]', m).onclick = async ev => {
       const f = $('#f-charter', m);
       if (!f.reportValidity()) return;
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
+        vat_country: d.vat_country || null, vat_rate: toNum(d.vat_rate) ?? 0,
         fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt, fuel_by_boat: !!d.fuel_by_boat,
         client_address: d.client_address || null, client_vat: d.client_vat || null,
         report_to: cleanEmails(d.report_to) || null, report_cc: cleanEmails(d.report_cc) || null };
@@ -1339,7 +1444,8 @@
   }
   ACTIONS['new-charter'] = () => {
     const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
-    charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '', fuel_company: boatName(), fuel_by_boat: true });
+    charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '', fuel_company: boatName(), fuel_by_boat: true,
+      vat_country: last?.vat_country || 'France', vat_rate: last?.vat_rate ?? 20 });
   };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
@@ -1530,7 +1636,7 @@ Veuillez trouver ci-dessous le rapport complet du charter « ${c.title} » (${fd
 
 • APA reçu : ${money(st.apa, cur)}
 • Total des dépenses : ${money(st.total, cur)}${st.fuelTotal ? `\n  dont fuel : ${money(st.fuelTotal, cur)} (${fmt(st.fuelLiters)} L)` : ''}${st.tipsAuto ? `\n  dont tips équipage : ${money(st.tipsAuto, cur)}` : ''}
-• Solde APA : ${money(st.balance, cur)} (${st.balance >= 0 ? 'à rembourser au client' : 'à régler par le client'})${B.invoices.length ? `\n• Facture émise par ${boatName()} : n° ${B.invoices.map(i => `${i.number} (${money(i.total_ttc, i.currency)})`).join(', ')}` : ''}
+• Solde APA (APA left) : ${money(st.balance, cur)} (${st.balance >= 0 ? 'à rembourser au client' : 'à régler par le client'})${st.vatEst ? `\n• TVA estimée (VAT estimated, ${charterVatRate(c)} %) sur montants payés HT : ${money(st.vatEst, cur)}\n• Solde APA après TVA estimée (APA left including VAT estimated) : ${money(st.balanceInclVat, cur)}` : ''}${B.invoices.length ? `\n• Facture émise par ${boatName()} : n° ${B.invoices.map(i => `${i.number} (${money(i.total_ttc, i.currency)})`).join(', ')}` : ''}
 
 Rapport complet (compta signée, détail fuel et ${nFiles} facture(s) téléchargeables, export Excel et PDF) :
 ${url}
@@ -1667,7 +1773,16 @@ ${yacht}`;
         <label class="field"><span>Total TTC</span><input type="number" step="0.01" name="total" required value="${esc(e.total ?? '')}"></label>
         <div class="field"><span>Facture (PDF / photo)</span>
           ${e.file_path ? `<div class="current-file">${fileLink(e.file_path, e.file_name || 'Facture')}<label class="check small"><input type="checkbox" name="remove_file"> retirer</label></div>` : ''}
-          <input type="file" name="file" accept="application/pdf,image/*"></div>
+          <input type="file" name="file" accept="application/pdf,image/*,.xml,text/xml,application/xml"></div>
+        <div class="span-2 ht-box">
+          <label class="check"><input type="checkbox" name="ht_paid" ${toNum(e.vat_est_base) ? 'checked' : ''}>
+            <span><b>Tout ou partie payé HT</b> — TVA à régulariser par le représentant fiscal (ex. facture italienne « art. 7 », autoliquidation)</span></label>
+          <div id="ht-detect" class="small"></div>
+          <div class="form-grid ht-fields ${toNum(e.vat_est_base) ? '' : 'hidden'}">
+            <label class="field"><span>Montant payé HT concerné</span><input type="number" step="0.01" name="vat_est_base" value="${esc(e.vat_est_base ?? '')}"></label>
+            <label class="field"><span>TVA estimée <small>(vide = calcul auto à ${fmt(charterVatRate(c), charterVatRate(c) % 1 ? 1 : 0)} %${c.vat_country ? ' — ' + esc(c.vat_country) : ''})</small></span><input type="number" step="0.01" name="vat_est" value="${esc(e.vat_est ?? '')}" placeholder="auto"></label>
+          </div>
+        </div>
         <label class="check span-2 boat-toggle"><input type="checkbox" name="billed_by_boat" ${e.billed_by_boat ? 'checked' : ''}>
           <span><b>Facturée par le bateau (${esc(boatName())})</b> — incluse dans la facture émise automatiquement à la clôture</span></label>
         <datalist id="dl-companies"><option value="${esc(boatName())}">${esc(boatName())} — le bateau (facture auto)</option>${[...new Set([...(PROFILE.suppliers || []), ...S.expenses.map(x => x.company)].filter(x => x && !isBoatName(x)))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>
@@ -1682,6 +1797,40 @@ ${yacht}`;
       if (!totalTouched && ht !== null) f.total.value = r2(ht + (vat || 0));
     };
     f.amount_ht.addEventListener('input', syncTotal); f.vat.addEventListener('input', syncTotal);
+    // --- partie payée HT / TVA estimée
+    const rate = charterVatRate(c);
+    const htToggle = () => {
+      $('.ht-fields', m).classList.toggle('hidden', !f.ht_paid.checked);
+      if (f.ht_paid.checked && !f.vat_est_base.value) f.vat_est_base.value = f.amount_ht.value || f.total.value || '';
+      htPreview();
+    };
+    const htPreview = () => {
+      const base = toNum(f.vat_est_base.value), man = toNum(f.vat_est.value);
+      f.vat_est.placeholder = base ? `auto : ${fmt(r2(base * rate / 100), 2)}` : 'auto';
+      if (man == null && base) f.vat_est.title = `${fmt(base, 2)} × ${rate} %`;
+    };
+    f.ht_paid.addEventListener('change', htToggle); f.vat_est_base.addEventListener('input', htPreview);
+    const detectBox = $('#ht-detect', m);
+    f.file.addEventListener('change', async () => {
+      const file = f.file.files[0]; detectBox.innerHTML = ''; if (!file) return;
+      detectBox.innerHTML = '<span class="muted">Analyse de la facture…</span>';
+      try {
+        const r = await analyseInvoiceFile(file);
+        if (!r) { detectBox.innerHTML = /\.(pdf|xml)$/i.test(file.name) ? '<span class="muted">Aucune mention de facturation HT détectée.</span>' : '<span class="muted">Photo : pas de lecture automatique, cochez « payé HT » si besoin.</span>'; return; }
+        if (r.fill) {
+          const set = (name, v) => { if (v != null && v !== '' && (!f[name].value || name === 'total' || name === 'amount_ht' || name === 'vat')) f[name].value = v; };
+          set('company', r.fill.company); set('invoice_ref', r.fill.invoice_ref); if (r.fill.date) f.date.value = r.fill.date;
+          set('amount_ht', r.fill.amount_ht); set('vat', r.fill.vat); set('total', r.fill.total); totalTouched = true;
+        }
+        if (r.htBase > 0 || r.mentions?.length) {
+          f.ht_paid.checked = true; $('.ht-fields', m).classList.remove('hidden');
+          f.vat_est_base.value = r.htBase > 0 ? r.htBase : (f.amount_ht.value || f.total.value || '');
+          htPreview();
+        }
+        detectBox.innerHTML = `<div class="detect ${r.htBase > 0 || r.mentions?.length ? 'is-ht' : ''}">${ICON.wand}<div>${r.summary}${r.mentions?.length ? `<br>Mention(s) : <b>${r.mentions.map(esc).join(' · ')}</b>` : ''}
+          ${r.htBase > 0 || r.mentions?.length ? `<br><span class="muted">Vérifiez le montant HT concerné ci-dessous${r.exact ? '' : ' (si la facture mélange lignes HT et TTC, ne gardez que les lignes HT)'}.</span>` : ''}</div></div>`;
+      } catch (err) { detectBox.innerHTML = `<span class="muted">Lecture impossible : ${esc(errMsg(err))}</span>`; }
+    });
     f.company.addEventListener('input', () => { if (isBoatName(f.company.value)) f.billed_by_boat.checked = true; });
     f.company.addEventListener('change', () => { f.billed_by_boat.checked = isBoatName(f.company.value) || (f.billed_by_boat.checked && !f.company.value); });
     $('[data-ok]', m).onclick = async ev => {
@@ -1690,7 +1839,10 @@ ${yacht}`;
       const row = { charter_id: c.id, num: toNum(d.get('num')), date: d.get('date') || null, company: d.get('company') || null,
         invoice_ref: d.get('invoice_ref') || null, category: d.get('category'), description: d.get('description') || null,
         amount_ht: toNum(d.get('amount_ht')), vat: toNum(d.get('vat')), total: r2(toNum(d.get('total')) || 0), method: d.get('method'),
-        billed_by_boat: !!d.get('billed_by_boat') };
+        billed_by_boat: !!d.get('billed_by_boat'),
+        vat_est_base: d.get('ht_paid') ? toNum(d.get('vat_est_base')) : null,
+        vat_est: d.get('ht_paid') ? toNum(d.get('vat_est')) : null };
+      if (d.get('ht_paid') && !row.vat_est_base) return toast('Indiquez le montant payé HT concerné', 'err');
       busy(ev.currentTarget, true);
       try {
         const file = f.file.files[0];
