@@ -393,3 +393,5 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .vat-summary div { background: var(--warn-soft); }
 .vat-summary span { color: var(--warn) !important; }
 @media screen and (max-width: 760px) { .kpis-6 { grid-template-columns: 1fr 1fr; } }
+.ht-result { margin-top: 8px; }
+[data-analyse] { margin-top: 8px; }

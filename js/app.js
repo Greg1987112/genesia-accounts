@@ -16,6 +16,9 @@
   const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   // Pays de début du charter → taux de TVA appliqué aux montants payés HT (modifiable par charter)
   const VAT_COUNTRIES = [['France', 20], ['Italie', 22], ['Espagne', 21], ['Croatie', 13], ['Grèce', 0], ['Monaco', 20], ['Autre', null]];
+  const TESS_JS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  const TESS_OPTS = { workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1' };
   const JSPDF_JS = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
   const JSZIP_JS = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
   const YACHT = CFG.yachtName || 'Motor Yacht';
@@ -841,6 +844,8 @@
     [/iva\s*0\s*%|vat\s*0\s*%|tva\s*0\s*%/i, m => m], [/exon[ée]ration\s+de\s+tva|exon[ée]r[ée]e?\s+de\s+tva/i, m => m],
     [/art(?:icle|\.)?\s*(?:262|283)\b/i, m => m], [/vat\s+exempt\w*|exempt\s+from\s+vat/i, m => m],
     [/operaci[oó]n\s+exenta|inversi[oó]n\s+del\s+sujeto\s+pasivo/i, m => m],
+    [/(?:operazione\s+)?non\s+soggett\w*\s+(?:ad\s+)?iva/i, m => m], [/senza\s+(?:applicazione\s+(?:dell['’]\s*)?)?iva/i, m => m],
+    [/\bOp\.?\s*non\s+imp\w*/i, m => m],
   ];
   function findHtMentions(text) {
     const out = new Set();
@@ -880,8 +885,43 @@
       fill: { company, invoice_ref: one('Numero'), date: one('Data'), amount_ht: ht, vat, total },
       summary: `Facture électronique italienne : ${lines.length} ligne(s), dont <b>${htLines.length} sans TVA</b> (${money(htBase)}) et ${lines.length - htLines.length} avec TVA. Total ${money(total)}.` };
   }
-  async function analyseInvoiceFile(file) {
+  // Lecture de texte sur photo / PDF scanné (OCR, dans le navigateur — quelques secondes)
+  async function downscale(src, max = 2000) {
+    const img = src instanceof HTMLCanvasElement ? src : await createImageBitmap(src);
+    const k = Math.min(1, max / Math.max(img.width, img.height));
+    if (k === 1 && src instanceof HTMLCanvasElement) return src;
+    const cv = document.createElement('canvas'); cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height); return cv;
+  }
+  async function ocr(sources, onProgress) {
+    await loadScript(TESS_JS);
+    const worker = await window.Tesseract.createWorker(['ita', 'eng'], 1, { ...TESS_OPTS,
+      logger: m => { if (onProgress && m.status === 'recognizing text') onProgress(m.progress); } });
+    let txt = '';
+    try { for (const s of sources) txt += (await worker.recognize(await downscale(s))).data.text + '\n'; }
+    finally { await worker.terminate(); }
+    return txt;
+  }
+  async function pdfPagesAsCanvas(file, maxPages = 2) {
+    await loadScript(PDFJS_JS);
+    const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+    const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise, out = [];
+    for (let i = 1; i <= Math.min(pdf.numPages, maxPages); i++) {
+      const page = await pdf.getPage(i), vp = page.getViewport({ scale: 2 });
+      const cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height;
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise; out.push(cv);
+    }
+    return out;
+  }
+  const ocrResult = txt => {
+    const m = findHtMentions(txt);
+    return m.length ? { mentions: m, ocr: true, summary: 'Mention de facturation HT lue sur le document (lecture automatique du texte).' }
+      : { none: true, summary: 'Document lu : aucune mention de facturation HT trouvée.' };
+  };
+
+  async function analyseInvoiceFile(file, onProgress) {
     const name = file.name.toLowerCase();
+    if (/^image\//.test(file.type) || /\.(jpe?g|png|heic|webp)$/.test(name)) return ocrResult(await ocr([file], onProgress));
     if (name.endsWith('.xml') || /xml/.test(file.type)) {
       const r = parseFatturaPA(await file.text());
       if (r) return r;
@@ -889,7 +929,7 @@
     }
     if (name.endsWith('.pdf') || file.type === 'application/pdf') {
       const txt = await pdfExtractText(file);
-      if (!txt.trim()) return { summary: 'PDF scanné (image) : pas de texte lisible, cochez « payé HT » si besoin.' };
+      if (txt.replace(/\s/g, '').length < 20) return ocrResult(await ocr(await pdfPagesAsCanvas(file), onProgress));
       const m = findHtMentions(txt);
       return m.length ? { mentions: m, summary: 'Mention de facturation HT détectée dans la facture.' } : null;
     }
@@ -1800,11 +1840,13 @@ ${yacht}`;
         <div class="span-2 ht-box">
           <label class="check"><input type="checkbox" name="ht_paid" ${toNum(e.vat_est_base) ? 'checked' : ''}>
             <span><b>Tout ou partie payé HT</b> — TVA à régulariser par le représentant fiscal (ex. facture italienne « art. 7 », autoliquidation)</span></label>
+          ${e.file_path ? `<button type="button" class="btn btn-ghost btn-sm" data-analyse>${ICON.wand}Analyser la facture jointe</button>` : ''}
           <div id="ht-detect" class="small"></div>
           <div class="form-grid ht-fields ${toNum(e.vat_est_base) ? '' : 'hidden'}">
             <label class="field"><span>Montant payé HT concerné</span><input type="number" step="0.01" name="vat_est_base" value="${esc(e.vat_est_base ?? '')}"></label>
             <label class="field"><span>TVA estimée <small>(vide = calcul auto à ${fmt(charterVatRate(c), charterVatRate(c) % 1 ? 1 : 0)} %${c.vat_country ? ' — ' + esc(c.vat_country) : ''})</small></span><input type="number" step="0.01" name="vat_est" value="${esc(e.vat_est ?? '')}" placeholder="auto"></label>
           </div>
+          <div id="ht-result" class="small ht-result"></div>
         </div>
         <label class="check span-2 boat-toggle"><input type="checkbox" name="billed_by_boat" ${e.billed_by_boat ? 'checked' : ''}>
           <span><b>Facturée par le bateau (${esc(boatName())})</b> — incluse dans la facture émise automatiquement à la clôture</span></label>
@@ -1822,38 +1864,55 @@ ${yacht}`;
     f.amount_ht.addEventListener('input', syncTotal); f.vat.addEventListener('input', syncTotal);
     // --- partie payée HT / TVA estimée
     const rate = charterVatRate(c);
-    const htToggle = () => {
-      $('.ht-fields', m).classList.toggle('hidden', !f.ht_paid.checked);
-      if (f.ht_paid.checked && !f.vat_est_base.value) f.vat_est_base.value = f.amount_ht.value || f.total.value || '';
-      htPreview();
-    };
-    const htPreview = () => {
+    let baseAuto = !toNum(e.vat_est_base);   // la base suit le montant HT / TTC tant qu'on ne la modifie pas à la main
+    const htResult = () => {
+      const box = $('#ht-result', m); if (!box) return;
+      if (!f.ht_paid.checked) { box.innerHTML = ''; return; }
       const base = toNum(f.vat_est_base.value), man = toNum(f.vat_est.value);
-      f.vat_est.placeholder = base ? `auto : ${fmt(r2(base * rate / 100), 2)}` : 'auto';
-      if (man == null && base) f.vat_est.title = `${fmt(base, 2)} × ${rate} %`;
+      const est = man != null ? man : (base ? r2(base * rate / 100) : 0);
+      box.innerHTML = !base ? '<span class="warn">Indiquez le montant payé HT concerné.</span>'
+        : man != null ? `TVA estimée saisie : <b>${money(est, c.currency)}</b>`
+        : rate ? `TVA estimée : <b>${money(est, c.currency)}</b> <span class="muted">(${fmt(base, 2)} × ${fmt(rate, rate % 1 ? 1 : 0)} %${c.vat_country ? ' — ' + esc(c.vat_country) : ''})</span>`
+        : `<span class="warn">Le taux de TVA du charter est 0 %${c.vat_country ? ' (' + esc(c.vat_country) + ')' : ''} : aucune TVA estimée. Changez le pays / taux du charter (bouton Modifier) ou saisissez la TVA estimée ci-dessus.</span>`;
+      f.vat_est.placeholder = base && rate ? `auto : ${fmt(r2(base * rate / 100), 2)}` : 'auto';
     };
-    f.ht_paid.addEventListener('change', htToggle); f.vat_est_base.addEventListener('input', htPreview);
+    const followBase = () => { if (f.ht_paid.checked && baseAuto) f.vat_est_base.value = f.amount_ht.value || f.total.value || ''; htResult(); };
+    const htToggle = () => { $('.ht-fields', m).classList.toggle('hidden', !f.ht_paid.checked); followBase(); };
+    f.ht_paid.addEventListener('change', htToggle);
+    f.vat_est_base.addEventListener('input', () => { baseAuto = !f.vat_est_base.value; htResult(); });
+    f.vat_est.addEventListener('input', htResult);
+    f.total.addEventListener('input', followBase); f.amount_ht.addEventListener('input', followBase);
+    htResult();
     const detectBox = $('#ht-detect', m);
-    f.file.addEventListener('change', async () => {
-      const file = f.file.files[0]; detectBox.innerHTML = ''; if (!file) return;
+    const runAnalysis = async file => {
       detectBox.innerHTML = '<span class="muted">Analyse de la facture…</span>';
       try {
-        const r = await analyseInvoiceFile(file);
-        if (!r) { detectBox.innerHTML = /\.(pdf|xml)$/i.test(file.name) ? '<span class="muted">Aucune mention de facturation HT détectée.</span>' : '<span class="muted">Photo : pas de lecture automatique, cochez « payé HT » si besoin.</span>'; return; }
+        const r = await analyseInvoiceFile(file, pr => { detectBox.innerHTML = `<span class="muted">Lecture du document… ${Math.round(pr * 100)} %</span>`; });
+        if (!r) { detectBox.innerHTML = '<span class="muted">Aucune mention de facturation HT détectée.</span>'; return; }
         if (r.fill) {
           const set = (name, v) => { if (v != null && v !== '' && (!f[name].value || name === 'total' || name === 'amount_ht' || name === 'vat')) f[name].value = v; };
           set('company', r.fill.company); set('invoice_ref', r.fill.invoice_ref); if (r.fill.date) f.date.value = r.fill.date;
           set('amount_ht', r.fill.amount_ht); set('vat', r.fill.vat); set('total', r.fill.total); totalTouched = true;
         }
-        if (r.htBase > 0 || r.mentions?.length) {
+        const isHt = r.htBase > 0 || !!r.mentions?.length;
+        if (isHt) {
           f.ht_paid.checked = true; $('.ht-fields', m).classList.remove('hidden');
-          f.vat_est_base.value = r.htBase > 0 ? r.htBase : (f.amount_ht.value || f.total.value || '');
-          htPreview();
+          if (r.htBase > 0) { f.vat_est_base.value = r.htBase; baseAuto = false; } else { baseAuto = true; followBase(); }
         }
-        detectBox.innerHTML = `<div class="detect ${r.htBase > 0 || r.mentions?.length ? 'is-ht' : ''}">${ICON.wand}<div>${r.summary}${r.mentions?.length ? `<br>Mention(s) : <b>${r.mentions.map(esc).join(' · ')}</b>` : ''}
-          ${r.htBase > 0 || r.mentions?.length ? `<br><span class="muted">Vérifiez le montant HT concerné ci-dessous${r.exact ? '' : ' (si la facture mélange lignes HT et TTC, ne gardez que les lignes HT)'}.</span>` : ''}</div></div>`;
+        htResult();
+        detectBox.innerHTML = `<div class="detect ${isHt ? 'is-ht' : ''}">${ICON.wand}<div>${r.summary}${r.mentions?.length ? `<br>Mention(s) : <b>${r.mentions.map(esc).join(' · ')}</b>` : ''}
+          ${isHt ? `<br><span class="muted">${r.exact ? 'Montant HT calculé ligne par ligne.' : 'Le montant HT concerné reprend le total : si la facture mélange lignes HT et TTC, ne gardez que les lignes HT.'}</span>` : ''}</div></div>`;
+      } catch (err) { detectBox.innerHTML = `<span class="muted">Lecture impossible : ${esc(errMsg(err))}. Cochez « payé HT » vous-même si besoin.</span>`; }
+    };
+    f.file.addEventListener('change', () => { const file = f.file.files[0]; detectBox.innerHTML = ''; if (file) runAnalysis(file); });
+    const anaBtn = $('[data-analyse]', m);
+    if (anaBtn) anaBtn.onclick = async () => {
+      try {
+        const url = api.fileUrl(e.file_path); const r = await fetch(url); if (!r.ok) throw new Error('fichier introuvable');
+        const blob = await r.blob();
+        runAnalysis(new File([blob], e.file_name || e.file_path.split('/').pop(), { type: blob.type }));
       } catch (err) { detectBox.innerHTML = `<span class="muted">Lecture impossible : ${esc(errMsg(err))}</span>`; }
-    });
+    };
     f.company.addEventListener('input', () => { if (isBoatName(f.company.value)) f.billed_by_boat.checked = true; });
     f.company.addEventListener('change', () => { f.billed_by_boat.checked = isBoatName(f.company.value) || (f.billed_by_boat.checked && !f.company.value); });
     $('[data-ok]', m).onclick = async ev => {
