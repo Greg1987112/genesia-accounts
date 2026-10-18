@@ -99,7 +99,7 @@
       tipsChosen: 'Tips', totalToSign: 'Total à approuver', charterFee: 'Charter fee', tipsInvalid: 'Montant de tips invalide.',
       step: 'Étape', reportTitle: 'Rapport de charter', zipAll: 'Toutes les factures (.zip)',
       paidAs: 'Payé', inclVatChip: 'TTC', pricePerLPaid: 'Prix / L',
-      vatEstimated: 'TVA estimée', apaLeftInclVat: 'Solde APA après TVA estimée', vatEstNote: 'Montant payé HT : la TVA sera facturée par le représentant fiscal après envoi du rapport',
+      vatEstimated: 'TVA estimée', apaLeftInclVat: 'Solde APA après TVA estimée', toValidate: 'À valider par le représentant fiscal', vatEstNote: 'Montant payé HT : la TVA sera facturée par le représentant fiscal après envoi du rapport',
       htChip: 'HT', apaLeft: 'Solde APA',
       boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
@@ -134,7 +134,7 @@
       tipsChosen: 'Gratuity', totalToSign: 'Total to approve', charterFee: 'Charter fee', tipsInvalid: 'Invalid gratuity amount.',
       step: 'Step', reportTitle: 'Charter report', zipAll: 'All invoices (.zip)',
       paidAs: 'Paid', inclVatChip: 'incl. VAT', pricePerLPaid: 'Price / L',
-      vatEstimated: 'VAT estimated', apaLeftInclVat: 'APA left including VAT estimated', vatEstNote: 'Paid excl. VAT: this VAT will be invoiced by the fiscal representative once the report is sent',
+      vatEstimated: 'VAT estimated', apaLeftInclVat: 'APA left including VAT estimated', toValidate: 'To be validated by the fiscal representative', vatEstNote: 'Paid excl. VAT: this VAT will be invoiced by the fiscal representative once the report is sent',
       htChip: 'excl. VAT', apaLeft: 'APA left',
       boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
@@ -544,8 +544,9 @@
         <div class="kpi-sub">${fmt(st.fuelLiters)} L</div></div>
       ${st.vatEst ? `<div class="kpi kpi-warn"><div class="kpi-label">${t('vatEstimated')}</div><div class="kpi-value">${money(st.vatEst, cur)}</div>
         <div class="kpi-sub">${fmt(charterVatRate(B.charter), charterVatRate(B.charter) % 1 ? 1 : 0)} %${B.charter.vat_country ? ' · ' + esc(B.charter.vat_country) : ''}</div></div>
-      <div class="kpi kpi-balance ${st.balanceInclVat >= 0 ? 'is-pos' : 'is-neg'}"><div class="kpi-label">${t('apaLeftInclVat')}</div>
-        <div class="kpi-value">${money(st.balanceInclVat, cur)}</div><div class="kpi-sub">${st.balanceInclVat >= 0 ? t('toRefund') : t('toPay')}</div></div>` : ''}
+      <div class="kpi kpi-vatbal"><div class="kpi-label">${t('apaLeftInclVat')}</div>
+        <div class="kpi-value">${money(st.balanceInclVat, cur)}</div><div class="kpi-sub">${st.balanceInclVat >= 0 ? t('toRefund') : t('toPay')}</div>
+        <div class="kpi-validate">⚠ ${t('toValidate')}</div></div>` : ''}
     </div>`;
   }
 
