@@ -408,3 +408,5 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
   .table td[data-label] { overflow-wrap: break-word; }
   .table-cards td:nth-child(2) { white-space: nowrap; }
 }
+.table .actions .icon-btn.danger { color: var(--bad); opacity: .75; }
+.table .actions .icon-btn.danger:hover { opacity: 1; }

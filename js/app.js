@@ -857,12 +857,57 @@
     await loadScript(PDFJS_JS);
     const lib = window.pdfjsLib; lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
     const pdf = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
-    let txt = '';
+    const lines = [];
     for (let i = 1; i <= Math.min(pdf.numPages, 6); i++) {
       const page = await pdf.getPage(i); const c = await page.getTextContent();
-      txt += c.items.map(it => it.str).join(' ') + '\n';
+      const rows = [];
+      c.items.filter(it => it.str && it.str.trim()).forEach(it => {
+        const y = it.transform[5], x = it.transform[4], h = Math.abs(it.transform[3]) || 8;
+        let row = rows.find(r => Math.abs(r.y - y) < Math.max(2.5, h * 0.45));
+        if (!row) { row = { y, items: [] }; rows.push(row); }
+        row.items.push({ x, s: it.str });
+      });
+      rows.sort((a, b) => b.y - a.y).forEach(r => lines.push(r.items.sort((a, b) => a.x - b.x).map(i => i.s).join(' ').replace(/\s+/g, ' ').trim()));
     }
-    return txt;
+    return lines.join('\n');
+  }
+
+  // ---- Lecture des montants d'une facture (texte PDF ou photo) : total, HT, TVA, part non taxée
+  const AMOUNT_RE = /(?:€|eur\.?)?\s*(-?\d{1,3}(?:[ .\u00a0\u202f]\d{3})+(?:,\d{2})|-?\d{1,3}(?:,\d{3})+\.\d{2}|-?\d+[,.]\d{2})(?!\d|\s?%)/gi;
+  function parseAmount(s) {
+    s = s.replace(/[\s\u00a0\u202f]/g, '');
+    if (/,\d{2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
+    else s = s.replace(/,/g, '');
+    const v = parseFloat(s); return isNaN(v) ? null : v;
+  }
+  const amountsIn = line => [...line.matchAll(AMOUNT_RE)].map(m => parseAmount(m[1])).filter(v => v != null);
+  function parseInvoiceAmounts(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    const pick = (re, exclude) => {           // dernier montant de la ligne qui porte le libellé (ou de la ligne suivante)
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = norm(lines[i]); if (!re.test(l) || (exclude && exclude.test(l))) continue;
+        const a = amountsIn(lines[i]); if (a.length) return a[a.length - 1];
+        const b = lines[i + 1] ? amountsIn(lines[i + 1]) : []; if (b.length) return b[b.length - 1];
+      }
+      return null;
+    };
+    const total = pick(/total(e)?\s*(documento|fattura|da pagare|a pagare|ttc|eur|general|importo)|net a payer|montant ttc|importo totale|total (due|amount|to pay)|amount due|^total(e)?\b(?!.*(ht|imponibile|iva|tva|vat|excl|net))/);
+    const vat = pick(/(totale\s+)?(iva|tva|vat|imposta)\b(?!.*(esclus|exclu|non\s+imp|art\.?\s*7))/, /imponibile\s+\d|base/);
+    let ht = pick(/total(e)?\s*(ht|imponibile|hors taxe|excl|net)|imponibile|montant ht|net amount|subtotal|base imponible/, /iva|tva|vat|imposta/);
+    // part non taxée : ligne qui porte une mention HT (art. 7, non imponibile, N3…) avec un montant
+    // récapitulatif (« non imponibile art. … 1.700,00 ») en priorité, sinon somme des lignes codées N2…N6
+    let sumMention = 0, sumN = 0;
+    for (const l of lines) {
+      const a = amountsIn(l); if (!a.length) continue;
+      if (findHtMentions(l).length) sumMention = r2(sumMention + a[a.length - 1]);
+      else if (/\bN[2-6](\.\d)?\b/.test(l)) sumN = r2(sumN + a[a.length - 1]);
+    }
+    const htBase = sumMention || sumN || null;
+    const all = lines.flatMap(amountsIn);
+    const totalF = total ?? (all.length ? Math.max(...all) : null);
+    if (ht == null && totalF != null && vat != null) ht = r2(totalF - vat);
+    return { total: totalF, vat, ht, htBase };
   }
   function parseFatturaPA(xmlText) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
@@ -914,11 +959,24 @@
     }
     return out;
   }
-  const ocrResult = txt => {
-    const m = findHtMentions(txt);
-    return m.length ? { mentions: m, ocr: true, summary: 'Mention de facturation HT lue sur le document (lecture automatique du texte).' }
-      : { none: true, summary: 'Document lu : aucune mention de facturation HT trouvée.' };
-  };
+  // Résultat commun PDF / photo : mentions + montants lus
+  function textResult(txt, source) {
+    const m = findHtMentions(txt), a = parseInvoiceAmounts(txt);
+    const isHt = m.length > 0;
+    let htBase = null;
+    if (isHt) {
+      if (a.htBase) htBase = a.htBase;                                    // ligne « non imponibile … 1.700,00 »
+      else if (a.total != null && (!a.vat || a.vat === 0)) htBase = a.total; // toute la facture sans TVA
+      else if (a.ht != null && a.vat === 0) htBase = a.ht;
+    }
+    const cap = a.total != null ? r2(a.total - (a.vat || 0)) : null;   // la part HT ne peut dépasser total − TVA
+    if (htBase != null && cap != null && htBase > cap) htBase = cap;
+    const fill = { total: a.total, vat: a.vat, amount_ht: a.ht };
+    const found = [a.total != null && `Total ${money(a.total)}`, a.ht != null && `HT ${money(a.ht)}`, a.vat != null && `TVA ${money(a.vat)}`].filter(Boolean).join(' · ');
+    return { mentions: m, htBase, fill, exact: !!(isHt && a.htBase && htBase === a.htBase), amountsFound: !!found,
+      summary: `${source}${found ? ` — montants lus : ${found}` : ' — montants non trouvés, saisissez-les'}${isHt ? (htBase != null ? `. <b>Part payée HT : ${money(htBase)}</b>` : '. Indiquez la part payée HT') : '. Aucune mention de facturation HT'}.` };
+  }
+  const ocrResult = txt => textResult(txt, 'Document lu (photo / scan)');
 
   async function analyseInvoiceFile(file, onProgress) {
     const name = file.name.toLowerCase();
@@ -931,8 +989,7 @@
     if (name.endsWith('.pdf') || file.type === 'application/pdf') {
       const txt = await pdfExtractText(file);
       if (txt.replace(/\s/g, '').length < 20) return ocrResult(await ocr(await pdfPagesAsCanvas(file), onProgress));
-      const m = findHtMentions(txt);
-      return m.length ? { mentions: m, summary: 'Mention de facturation HT détectée dans la facture.' } : null;
+      return textResult(txt, 'Facture PDF lue');
     }
     return null;
   }
@@ -1921,9 +1978,12 @@ ${yacht}`;
           <span><b>Facturée par le bateau (${esc(boatName())})</b> — incluse dans la facture émise automatiquement à la clôture</span></label>
         <datalist id="dl-companies"><option value="${esc(boatName())}">${esc(boatName())} — le bateau (facture auto)</option>${[...new Set([...(PROFILE.suppliers || []), ...S.expenses.map(x => x.company)].filter(x => x && !isBoatName(x)))].sort().map(x => `<option value="${esc(x)}">`).join('')}</datalist>
       </form>`,
-      footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
+      footer: `${!isNew ? `<button class="btn btn-ghost danger mr-auto" data-del-exp>${ICON.trash}Supprimer</button>` : ''}
+        <button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
     const f = $('#f-exp', m);
+    const delBtn = $('[data-del-exp]', m);
+    if (delBtn) delBtn.onclick = () => ACTIONS['del-expense']({ dataset: { id: e.id } });
     let totalTouched = !isNew && e.total != null && (e.amount_ht == null || e.vat == null);
     f.total.addEventListener('input', () => { totalTouched = true; });
     const syncTotal = () => {
@@ -1970,7 +2030,7 @@ ${yacht}`;
         }
         htResult();
         detectBox.innerHTML = `<div class="detect ${isHt ? 'is-ht' : ''}">${ICON.wand}<div>${r.summary}${r.mentions?.length ? `<br>Mention(s) : <b>${r.mentions.map(esc).join(' · ')}</b>` : ''}
-          ${isHt ? `<br><span class="muted">${r.exact ? 'Montant HT calculé ligne par ligne.' : 'Le montant HT concerné reprend le total : si la facture mélange lignes HT et TTC, ne gardez que les lignes HT.'}</span>` : ''}</div></div>`;
+          ${isHt ? `<br><span class="muted">${r.exact ? 'Part HT lue sur la facture — vérifiez-la.' : 'La part HT reprend le total hors TVA : si la facture mélange lignes HT et TTC, ne gardez que les lignes HT.'}</span>` : ''}</div></div>`;
       } catch (err) { detectBox.innerHTML = `<span class="muted">Lecture impossible : ${esc(errMsg(err))}. Cochez « payé HT » vous-même si besoin.</span>`; }
     };
     f.file.addEventListener('change', () => { const file = f.file.files[0]; detectBox.innerHTML = ''; if (file) runAnalysis(file); });
