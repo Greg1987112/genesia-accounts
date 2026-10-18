@@ -410,3 +410,8 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 }
 .table .actions .icon-btn.danger { color: var(--bad); opacity: .75; }
 .table .actions .icon-btn.danger:hover { opacity: 1; }
+
+/* Pays libre + rappel tips */
+[hidden] { display: none !important; }
+.field .vat-other { margin-top: 6px; }
+.tips-reminder { background: #fff7e0; border: 1px solid #e8c766; border-radius: 10px; padding: 10px 12px; }

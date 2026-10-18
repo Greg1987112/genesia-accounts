@@ -15,7 +15,7 @@
   const PDFJS_JS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
   const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   // Pays de début du charter → taux de TVA appliqué aux montants payés HT (modifiable par charter)
-  const VAT_COUNTRIES = [['France', 20], ['Italie', 22], ['Espagne', 21], ['Croatie', 13], ['Grèce', 0], ['Monaco', 20], ['Autre', null]];
+  const VAT_COUNTRIES = [['France', 20], ['Italie', 22], ['Espagne', 21], ['Croatie', 13], ['Grèce', 0], ['Monaco', 20]];
   const TESS_JS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
   const TESS_OPTS = { workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
     corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1' };
@@ -1574,10 +1574,17 @@
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
         ${!S.voyages.some(v => v.charter_id === c.id) ? `<label class="check span-2 boat-toggle"><input type="checkbox" name="auto_voyage" ${c.auto_voyage !== false ? 'checked' : ''}>
           <span><b>Créer automatiquement le voyage dans le fuel booklet</b> le jour du début du charter (nom, dates, ROB au départ calculé ce jour-là)</span></label>` : ''}
-        <label class="check span-2 tips-toggle"><input type="checkbox" name="tips_prompt" ${tipsEnabled(c) ? 'checked' : ''}>
-          <span><b>Proposer les tips au client avant sa signature</b><br><small class="muted">Fenêtre 10 % / 15 % / 20 % du charter fee ou montant libre. Décochez si vous préférez ne pas aborder les tips dans l’app.</small></span></label>
-        <label class="field"><span>Pays de début du charter <small>(TVA)</small></span><select name="vat_country">
-          ${VAT_COUNTRIES.map(([n, r]) => `<option value="${n}" data-rate="${r ?? ''}" ${n === (c.vat_country || 'France') ? 'selected' : ''}>${n}${r != null ? ` — ${r} %` : ''}</option>`).join('')}</select></label>
+        ${(() => {
+          const cur = c.vat_country || 'France';
+          const known = VAT_COUNTRIES.map(x => x[0]);
+          const used = [...new Set(S.charters.map(x => x.vat_country).filter(x => x && !known.includes(x)))].sort();
+          const all = [...known, ...used];
+          const other = !all.includes(cur);
+          return `<label class="field"><span>Pays de début du charter <small>(TVA)</small></span><select name="vat_country_sel">
+            ${all.map(n => { const r = VAT_COUNTRIES.find(x => x[0] === n)?.[1]; return `<option value="${esc(n)}" data-rate="${r ?? ''}" ${!other && n === cur ? 'selected' : ''}>${esc(n)}</option>`; }).join('')}
+            <option value="__other" data-rate="" ${other ? 'selected' : ''}>Autre pays (saisir)…</option></select>
+            <input name="vat_country_other" class="vat-other mt-6" placeholder="Nom du pays, ex. Malte" value="${other ? esc(cur) : ''}" ${other ? '' : 'hidden'}></label>`;
+        })()}
         <label class="field"><span>Taux de TVA appliqué (%) <small>(montants payés HT)</small></span><input type="number" step="0.01" min="0" name="vat_rate" value="${esc(c.vat_rate ?? 20)}"></label>
         <label class="field"><span>Devise</span><select name="currency">${opt(['EUR', 'USD', 'GBP', 'CHF'], c.currency || CFG.currency || 'EUR')}</select></label>
         <div class="field-sep span-2">Ligne fuel (calculée automatiquement)</div>
@@ -1595,15 +1602,22 @@
         <button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
     const fc = $('#f-charter', m);
-    fc.vat_country.addEventListener('change', () => { const r = fc.vat_country.selectedOptions[0].dataset.rate; if (r !== '') fc.vat_rate.value = r; });
+    fc.vat_country_sel.addEventListener('change', () => {
+      const o = fc.vat_country_sel.selectedOptions[0], isOther = o.value === '__other';
+      fc.vat_country_other.hidden = !isOther; fc.vat_country_other.required = isOther;
+      if (isOther) { fc.vat_country_other.focus(); fc.vat_rate.select?.(); }
+      else if (o.dataset.rate !== '') fc.vat_rate.value = o.dataset.rate;
+      else { const prev = S.charters.find(x => x.vat_country === o.value); if (prev) fc.vat_rate.value = prev.vat_rate ?? 0; }
+    });
+    fc.vat_country_other.required = fc.vat_country_sel.value === '__other';
     $('[data-ok]', m).onclick = async ev => {
       const f = $('#f-charter', m);
       if (!f.reportValidity()) return;
       const d = Object.fromEntries(new FormData(f));
       const row = { title: d.title.trim(), client_name: d.client_name || null, yacht: d.yacht || YACHT, start_date: d.start_date || null,
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
-        vat_country: d.vat_country || null, vat_rate: toNum(d.vat_rate) ?? 0,
-        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt, fuel_by_boat: !!d.fuel_by_boat,
+        vat_country: (d.vat_country_sel === '__other' ? (d.vat_country_other || '').trim() : d.vat_country_sel) || null, vat_rate: toNum(d.vat_rate) ?? 0,
+        fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, fuel_by_boat: !!d.fuel_by_boat,
         ...(S.voyages.some(v => v.charter_id === c.id) ? {} : { auto_voyage: !!d.auto_voyage }),
         client_address: d.client_address || null, client_vat: d.client_vat || null,
         report_to: cleanEmails(d.report_to) || null, report_cc: cleanEmails(d.report_cc) || null };
@@ -1716,7 +1730,7 @@
         </div>
         <div class="row-gap center no-print">
           <button class="btn btn-ghost" data-act="master-sign">${ICON.pen}${c.master_signature ? 'Re-signer (capitaine)' : 'Signer (capitaine)'}</button>
-          ${!locked ? `<span class="muted small">Le client pourra signer${tipsEnabled(c) ? ' (et choisir ses tips)' : ''} une fois la compta clôturée.</span>` : ''}
+          ${!locked ? `<span class="muted small">Le client pourra signer une fois la compta clôturée (la question des tips vous sera posée à la clôture).</span>` : ''}
         </div>
       </section>`);
   }
@@ -1884,22 +1898,39 @@ ${yacht}`;
     $('[data-zip]', m).onclick = ev => downloadReportZip(B, ev.currentTarget);
   };
 
+  function tipsQuestion(c) {
+    return new Promise(res => {
+      const fee = c.charter_fee ? `10 % = ${money(c.charter_fee * 0.1, c.currency)} · 15 % = ${money(c.charter_fee * 0.15, c.currency)} · 20 % = ${money(c.charter_fee * 0.2, c.currency)}`
+        : '<span class="warn">Charter fee non renseigné : le client ne pourra saisir qu’un montant libre.</span>';
+      const m = openModal({ title: 'Fenêtre tips',
+        body: `<p class="tips-reminder">🔔 <b>Voulez-vous que la fenêtre des tips apparaisse au client au moment de sa signature ?</b></p>
+          <p class="muted">Elle lui proposera 10 %, 15 % ou 20 % du charter fee, ou un montant libre.<br>${fee}</p>`,
+        footer: `<button class="btn btn-ghost mr-auto" data-close>Annuler</button><button class="btn btn-ghost" data-no>Non</button><button class="btn btn-primary" data-yes>Oui</button>` });
+      let done = false; const fin = v => { done = true; closeModal(); res(v); };
+      $('[data-yes]', m).addEventListener('click', () => fin(true));
+      $('[data-no]', m).addEventListener('click', () => fin(false));
+      const obs = new MutationObserver(() => { if (!$('#modal-root').innerHTML) { obs.disconnect(); if (!done) res(null); } });
+      obs.observe($('#modal-root'), { childList: true });
+    });
+  }
+
   ACTIONS['close-charter'] = async b => {
     const c = charterById(b.dataset.id), st = computeStatement(buildBundle(S, c));
     const warn = [];
-    if (tipsEnabled(c) && !c.charter_fee) warn.push('Le <b>charter fee</b> n’est pas renseigné : le client ne pourra saisir qu’un montant de tips personnalisé.');
     if (!S.voyages.some(v => v.charter_id === c.id)) warn.push('Aucun voyage fuel n’est lié à ce charter : aucun fuel ne sera facturé.');
     const draft = boatInvoiceDraft(buildBundle(S, c));
     if (draft.lines.length && !PROFILE.address) warn.push('La fiche du bateau (adresse de facturation) n’est pas complétée dans <b>Paramètres</b> : la facture sera incomplète.');
     if (draft.lines.length && !c.client_address) warn.push('L’adresse de facturation du client n’est pas renseignée (bouton Modifier).');
     const ok = await confirmDialog(`Clôturer la compta de « ${esc(c.title)} » ?<br><br>
       Total : <b>${money(st.total, c.currency)}</b> · Solde APA : <b>${money(st.balance, c.currency)}</b><br><br>
-      Les dépenses seront verrouillées et le client pourra signer${tipsEnabled(c) ? ' (en choisissant ses tips)' : ' (sans fenêtre de tips)'}.
+      Les dépenses seront verrouillées et le client pourra signer.
       ${draft.lines.length ? `<br>Une facture de <b>${esc(boatName())}</b> (${money(draft.total_ttc, c.currency)}) sera émise automatiquement.` : ''}
       ${warn.length ? `<br><br><span class="warn">⚠ ${warn.join('<br>⚠ ')}</span>` : ''}`, 'Clôturer', false);
     if (!ok) return;
+    const tips = await tipsQuestion(c);
+    if (tips === null) return;
     try {
-      await api.update('charters', c.id, { status: 'closed', closed_at: new Date().toISOString() });
+      await api.update('charters', c.id, { status: 'closed', closed_at: new Date().toISOString(), tips_prompt: tips });
       await reload();
       let invMsg = '';
       try { const r = await ensureBoatInvoice(charterById(c.id)); if (r.inv && r.changed) invMsg = ` · facture ${r.inv.number} émise`; await reload(); }
