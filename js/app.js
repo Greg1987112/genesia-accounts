@@ -883,20 +883,23 @@
   const amountsIn = line => [...line.matchAll(AMOUNT_RE)].map(m => parseAmount(m[1])).filter(v => v != null);
   function parseInvoiceAmounts(text) {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    const norm = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-    const pick = (re, exclude) => {           // dernier montant de la ligne qui porte le libellé (ou de la ligne suivante)
+    const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    // montant sur la ligne qui porte le libellé (et éventuellement la suivante si la ligne ne contient QUE le libellé)
+    const pick = (re, exclude, allowNext = true, firstAfter = false) => {
       for (let i = lines.length - 1; i >= 0; i--) {
-        const l = norm(lines[i]); if (!re.test(l) || (exclude && exclude.test(l))) continue;
-        const a = amountsIn(lines[i]); if (a.length) return a[a.length - 1];
-        const b = lines[i + 1] ? amountsIn(lines[i + 1]) : []; if (b.length) return b[b.length - 1];
+        const l = norm(lines[i]); const mt = l.match(re); if (!mt || (exclude && exclude.test(l))) continue;
+        const after = amountsIn(lines[i].slice(mt.index)); if (after.length) return firstAfter ? after[0] : after[after.length - 1];
+        if (allowNext && l.replace(re, '').replace(/[^a-z0-9]/g, '').length < 4) {
+          const b = lines[i + 1] ? amountsIn(lines[i + 1]) : []; if (b.length) return b[b.length - 1];
+        }
       }
       return null;
     };
-    const total = pick(/total(e)?\s*(documento|fattura|da pagare|a pagare|ttc|eur|general|importo)|net a payer|montant ttc|importo totale|total (due|amount|to pay)|amount due|^total(e)?\b(?!.*(ht|imponibile|iva|tva|vat|excl|net))/);
-    const vat = pick(/(totale\s+)?(iva|tva|vat|imposta)\b(?!.*(esclus|exclu|non\s+imp|art\.?\s*7))/, /imponibile\s+\d|base/);
-    let ht = pick(/total(e)?\s*(ht|imponibile|hors taxe|excl|net)|imponibile|montant ht|net amount|subtotal|base imponible/, /iva|tva|vat|imposta/);
-    // part non taxée : ligne qui porte une mention HT (art. 7, non imponibile, N3…) avec un montant
-    // récapitulatif (« non imponibile art. … 1.700,00 ») en priorité, sinon somme des lignes codées N2…N6
+    const POINTS = /point|fidelit|bonus|consigne|colis|poids|volume|page/;
+    const lTotal = pick(/total(e)?\s*(documento|fattura|da pagare|a pagare|a payer|ttc|eur|general|importo)|net a payer|montant ttc|importo totale|total (due|amount|to pay)|amount due|(^|[^a-z])total(e)?\b(?!.*(ht|h\.t|imponibile|iva|tva|t\.v\.a|vat|excl|net|hors))/, POINTS);
+    const lVat = pick(/(totale\s+|total\s+|montant\s+)?(iva|tva|t\.v\.a\.?|vat|imposta)\b(?!.*(esclus|exclu|non\s+imp|art\.?\s*7|intra|n°|nº|no\.))/, /imponibile\s+\d|base|intra|taux|rate|aliquota|collectee|client/, false, true);
+    const lHt = pick(/total(e)?\s*(ht|h\.t\.?|imponibile|hors taxe|excl|net)|imponibile|montant ht|montant hors|net amount|subtotal|base imponible/, /iva|tva|vat|imposta|taux/);
+    // htBase : récapitulatif (« non imponibile art. … 1.700,00 ») en priorité, sinon somme des lignes codées N2…N6
     let sumMention = 0, sumN = 0;
     for (const l of lines) {
       const a = amountsIn(l); if (!a.length) continue;
@@ -904,9 +907,27 @@
       else if (/\bN[2-6](\.\d)?\b/.test(l)) sumN = r2(sumN + a[a.length - 1]);
     }
     const htBase = sumMention || sumN || null;
-    const all = lines.flatMap(amountsIn);
-    const totalF = total ?? (all.length ? Math.max(...all) : null);
-    if (ht == null && totalF != null && vat != null) ht = r2(totalF - vat);
+    // Cohérence : le total est le plus grand montant ; on cherche HT + TVA = TOTAL parmi les montants de la facture
+    const all = [...new Set(lines.flatMap(amountsIn).filter(v => v > 0).map(v => r2(v)))];
+    const max = all.length ? Math.max(...all) : null;
+    const T = lTotal && lTotal > 0 ? lTotal : max;
+    let best = null;
+    if (T) {
+      const has = new Set(all.map(v => Math.round(v * 100)));
+      for (const v of all) {
+        if (v <= 0 || v >= T / 2) continue;
+        const h = r2(T - v); if (!has.has(Math.round(h * 100))) continue;
+        const sameLine = lines.some(l => { const a = amountsIn(l).map(r2); return a.includes(h) && a.includes(v); });
+        const withT = lines.some(l => { const a = amountsIn(l).map(r2); return a.includes(h) && a.includes(v) && a.includes(r2(T)); });
+        const score = (withT ? 4 : 0) + (sameLine ? 2 : 0) + (lVat != null && r2(lVat) === v ? 3 : 0);
+        if (!best || score > best.score) best = { h, v, score };
+      }
+    }
+    let totalF = T ?? null, vat, ht;
+    if (best && (best.score > 0 || lVat == null)) { vat = best.v; ht = best.h; }
+    else { vat = lVat; ht = lHt ?? (totalF != null && vat != null ? r2(totalF - vat) : null); }
+    if (ht != null && totalF != null && (ht <= 0 || ht > totalF)) ht = null;
+    if (vat != null && totalF != null && (vat < 0 || vat >= totalF)) vat = null;
     return { total: totalF, vat, ht, htBase };
   }
   function parseFatturaPA(xmlText) {
