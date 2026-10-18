@@ -1576,7 +1576,7 @@
         <label class="field"><span>Début</span><input type="date" name="start_date" value="${esc(c.start_date || '')}"></label>
         <label class="field"><span>Fin</span><input type="date" name="end_date" value="${esc(c.end_date || '')}"></label>
         <label class="field"><span>APA reçu</span><input type="number" step="0.01" name="apa_paid" value="${esc(c.apa_paid ?? '')}"></label>
-        <label class="field"><span>Frais broker sur l’APA (%) <small>(ligne de dépense auto, 0 = aucune)</small></span><input type="number" step="0.01" min="0" name="broker_fee_pct" value="${esc(c.broker_fee_pct ?? 0.4)}"></label>
+        <label class="field"><span>Bank fee sur l’APA (%) <small>(ligne de dépense auto, 0 = aucune)</small></span><input type="number" step="0.01" min="0" name="broker_fee_pct" value="${esc(c.broker_fee_pct ?? 0.4)}"></label>
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
         ${!S.voyages.some(v => v.charter_id === c.id) ? `<label class="check span-2 boat-toggle"><input type="checkbox" name="auto_voyage" ${c.auto_voyage !== false ? 'checked' : ''}>
           <span><b>Créer automatiquement le voyage dans le fuel booklet</b> le jour du début du charter (nom, dates, ROB au départ calculé ce jour-là)</span></label>` : ''}
@@ -1636,7 +1636,7 @@
         // voyage charter pas encore terminé : suit les dates du charter
         const lv = S.voyages.find(v => v.charter_id === saved.id && toNum(v.rob_after) === null);
         if (!isNew && lv && (lv.start_date !== row.start_date || lv.end_date !== row.end_date)) { await api.update('voyages', lv.id, { start_date: row.start_date, end_date: row.end_date }); await reload(); }
-        try { if (await syncBrokerFee(charterById(saved.id))) await reload(); } catch (e) { toast('Frais broker : ' + errMsg(e), 'err'); }
+        try { if (await syncBrokerFee(charterById(saved.id))) await reload(); } catch (e) { toast('Bank fee : ' + errMsg(e), 'err'); }
         await autoCreateDueVoyages();
         closeModal(); notifyCharter(saved.id);
         if (isNew) location.hash = `#/charter/${saved.id}`; else route();
@@ -1654,20 +1654,21 @@
       } catch (e) { toast(errMsg(e), 'err'); }
     };
   }
-  // Ligne de dépense automatique « Broker fee » = APA reçu × % (suit l'APA et le taux du charter)
+  // Ligne de dépense automatique « Bank fee » = APA reçu × % (suit l'APA et le taux du charter)
   const nextExpenseNum = cid => Math.max(1, ...S.expenses.filter(x => x.charter_id === cid).map(x => x.num || 0)) + 1;
   async function syncBrokerFee(c) {
     if (!c || (c.status && c.status !== 'open')) return false;
     const pct = toNum(c.broker_fee_pct) ?? 0, apa = toNum(c.apa_paid) || 0, amount = r2(apa * pct / 100);
     const ex = S.expenses.find(e => e.charter_id === c.id && e.auto_kind === 'broker_fee');
     if (!(amount > 0)) { if (ex) { await api.remove('expenses', ex.id); return true; } return false; }
-    const description = `Broker fee ${String(pct).replace(".", ",")} % on APA received (${money(apa, c.currency)})`;
+    const description = `Bank fee ${String(pct).replace(".", ",")} % on APA transfer (${money(apa, c.currency)})`;
     if (ex) {
       const date = c.start_date || ex.date;
       if (r2(ex.total) === amount && ex.description === description && ex.date === date) return false;
       await api.update('expenses', ex.id, { total: amount, description, date }); return true;
     }
-    await api.insert('expenses', { charter_id: c.id, num: nextExpenseNum(c.id), date: c.start_date || today(), company: 'Broker',
+    await api.insert('expenses', { charter_id: c.id, num: nextExpenseNum(c.id), date: c.start_date || today(),
+      company: S.expenses.filter(e => e.auto_kind === 'broker_fee' && e.company).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0]?.company || 'Bank',
       category: 'Bank Fee', description, amount_ht: null, vat: null, total: amount, method: 'Bank Fee', auto_kind: 'broker_fee' });
     return true;
   }
