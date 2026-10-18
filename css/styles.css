@@ -397,3 +397,14 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 [data-analyse] { margin-top: 8px; }
 .row-edit { cursor: pointer; }
 .row-edit:hover td { background: #f8f3ea !important; }
+
+/* boutons d'action toujours visibles (colonne collée à droite quand le tableau déborde) */
+@media screen and (min-width: 761px) {
+  .table .actions { position: sticky; right: 0; z-index: 1; background: #fff; box-shadow: -8px 0 8px -8px rgba(15, 42, 68, .25); }
+  .table thead .actions { background: #fff; }
+  .table tbody tr:hover td.actions { background: #f8f3ea; }
+  .row-fuel td.actions, .row-tips td.actions { background: #fbf7ef; }
+  .table td.files { white-space: normal; min-width: 90px; }
+  .table td[data-label] { overflow-wrap: break-word; }
+  .table-cards td:nth-child(2) { white-space: nowrap; }
+}

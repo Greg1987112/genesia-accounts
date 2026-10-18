@@ -603,7 +603,7 @@
     return `<div class="table-wrap"><table class="table table-cards">
       <thead><tr><th>${t('num')}</th><th>${t('date')}</th><th>${t('supplier')}</th><th>${t('ref')}</th><th>${t('category')}</th>
       <th>${t('description')}</th><th class="num">${t('exclVat')}</th><th class="num">${t('vat')}</th><th class="num">${t('total')}</th>
-      <th>${t('payment')}</th><th>${t('invoice')}</th>${admin ? '<th></th>' : ''}</tr></thead>
+      <th>${t('payment')}</th><th>${t('invoice')}</th>${admin ? '<th class="actions"></th>' : ''}</tr></thead>
       <tbody>${rows.join('')}${empty}</tbody>
       <tfoot><tr><td colspan="8" class="tfoot-label">${t('total')}</td><td class="num strong">${money(st.total, cur)}</td><td colspan="${admin ? 3 : 2}"></td></tr>
       ${st.vatEst ? `<tr class="tfoot-vat"><td colspan="8" class="tfoot-label">${t('vatEstimated')} (${fmt(charterVatRate(c), charterVatRate(c) % 1 ? 1 : 0)} %)</td><td class="num strong">${money(st.vatEst, cur)}</td><td colspan="${admin ? 3 : 2}"></td></tr>` : ''}</tfoot>
@@ -1256,6 +1256,7 @@
       if (!(await api.isAdmin())) return renderLogin('Ce compte n’est pas autorisé. Ajoutez son e-mail dans la table « admins » de Supabase.');
       USER = await api.userEmail();
       await reload();
+      await autoCreateDueVoyages();
     } catch (e) { return renderLogin('Erreur de connexion à la base : ' + errMsg(e)); }
     window.addEventListener('hashchange', route);
     route();
@@ -1321,6 +1322,46 @@
   });
   ACTIONS.logout = async () => { await api.signOut(); location.hash = ''; renderLogin(); };
   ACTIONS['demo-reset'] = async () => { if (await confirmDialog('Remettre les données de démonstration à zéro ?', 'Réinitialiser')) { api.reset(); await reload(); route(); } };
+
+  // ---------------- Voyages : ordre chronologique & voyage charter automatique ----------------
+  // ROB au départ estimé à une date : ROB à l'arrivée du dernier voyage terminé avant cette date + soutages faits depuis
+  function suggestRobAt(date) {
+    const done = S.voyages.filter(v => toNum(v.rob_after) !== null && (!date || !v.end_date || v.end_date <= date)).sort(byPos);
+    const last = done[done.length - 1];
+    if (!last) return null;
+    const loaded = sum(S.bunkers.filter(b => b.date && last.end_date && b.date > last.end_date && (!date || b.date <= date)), b => b.quantity);
+    return r2(last.rob_after + loaded);
+  }
+  // Position pour qu'un voyage daté s'insère au bon endroit (les voyages suivants sont décalés)
+  async function placeVoyage(date) {
+    const list = S.voyages.slice().sort(byPos);
+    const maxPos = Math.max(0, ...list.map(v => v.position || 0));
+    const next = date ? list.find(v => v.start_date && v.start_date > date) : null;
+    if (!next) return maxPos + 1;
+    const pos = next.position;
+    for (const v of list.filter(x => (x.position || 0) >= pos).reverse()) {
+      await api.update('voyages', v.id, { position: (v.position || 0) + 1 });
+      v.position = (v.position || 0) + 1;
+    }
+    return pos;
+  }
+  async function createCharterVoyage(c) {
+    const position = await placeVoyage(c.start_date);
+    const v = await api.insert('voyages', {
+      num: Math.max(0, ...S.voyages.map(x => x.num || 0)) + 1, position,
+      description: `Charter ${c.client_name || c.title}`, start_date: c.start_date, end_date: c.end_date,
+      rob_before: suggestRobAt(c.start_date), rob_after: null, hours: null, is_charter: true, charter_id: c.id });
+    await api.update('charters', c.id, { auto_voyage: false });
+    return v;
+  }
+  // Au chargement : crée le voyage des charters qui ont commencé (une seule fois par charter)
+  async function autoCreateDueVoyages() {
+    const due = S.charters.filter(c => c.auto_voyage && c.start_date && c.start_date <= today()
+      && !S.voyages.some(v => v.charter_id === c.id)).sort((a, b) => a.start_date.localeCompare(b.start_date));
+    const created = [];
+    for (const c of due) { try { await createCharterVoyage(c); created.push(c.title); await reload(); } catch { /* réessaiera au prochain chargement */ } }
+    if (created.length) toast(`Voyage fuel créé pour : ${created.join(', ')}`);
+  }
 
   // ---------------- Paramètres : fiche bateau & fournisseurs ----------------
   function viewSettings() {
@@ -1453,6 +1494,8 @@
         <label class="field"><span>Fin</span><input type="date" name="end_date" value="${esc(c.end_date || '')}"></label>
         <label class="field"><span>APA reçu</span><input type="number" step="0.01" name="apa_paid" value="${esc(c.apa_paid ?? '')}"></label>
         <label class="field field-fee"><span>Charter fee <small>(sert uniquement au calcul des tips)</small></span><input type="number" step="0.01" name="charter_fee" value="${esc(c.charter_fee ?? '')}" placeholder="ex. 155000"></label>
+        ${!S.voyages.some(v => v.charter_id === c.id) ? `<label class="check span-2 boat-toggle"><input type="checkbox" name="auto_voyage" ${c.auto_voyage !== false ? 'checked' : ''}>
+          <span><b>Créer automatiquement le voyage dans le fuel booklet</b> le jour du début du charter (nom, dates, ROB au départ calculé ce jour-là)</span></label>` : ''}
         <label class="check span-2 tips-toggle"><input type="checkbox" name="tips_prompt" ${tipsEnabled(c) ? 'checked' : ''}>
           <span><b>Proposer les tips au client avant sa signature</b><br><small class="muted">Fenêtre 10 % / 15 % / 20 % du charter fee ou montant libre. Décochez si vous préférez ne pas aborder les tips dans l’app.</small></span></label>
         <label class="field"><span>Pays de début du charter <small>(TVA)</small></span><select name="vat_country">
@@ -1483,6 +1526,7 @@
         end_date: d.end_date || null, apa_paid: toNum(d.apa_paid) || 0, charter_fee: toNum(d.charter_fee), currency: d.currency,
         vat_country: d.vat_country || null, vat_rate: toNum(d.vat_rate) ?? 0,
         fuel_company: d.fuel_company || null, fuel_description: d.fuel_description || null, fuel_method: d.fuel_method, notes: d.notes || null, tips_prompt: !!d.tips_prompt, fuel_by_boat: !!d.fuel_by_boat,
+        ...(S.voyages.some(v => v.charter_id === c.id) ? {} : { auto_voyage: !!d.auto_voyage }),
         client_address: d.client_address || null, client_vat: d.client_vat || null,
         report_to: cleanEmails(d.report_to) || null, report_cc: cleanEmails(d.report_cc) || null };
       const bad = [...splitEmails(d.report_to), ...splitEmails(d.report_cc)].filter(x => !EMAIL_RE.test(x));
@@ -1490,7 +1534,12 @@
       busy(ev.currentTarget, true);
       try {
         const saved = isNew ? await api.insert('charters', row) : await api.update('charters', c.id, row);
-        await reload(); closeModal(); notifyCharter(saved.id);
+        await reload();
+        // voyage charter pas encore terminé : suit les dates du charter
+        const lv = S.voyages.find(v => v.charter_id === saved.id && toNum(v.rob_after) === null);
+        if (!isNew && lv && (lv.start_date !== row.start_date || lv.end_date !== row.end_date)) { await api.update('voyages', lv.id, { start_date: row.start_date, end_date: row.end_date }); await reload(); }
+        await autoCreateDueVoyages();
+        closeModal(); notifyCharter(saved.id);
         if (isNew) location.hash = `#/charter/${saved.id}`; else route();
         toast('Charter enregistré');
       } catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
@@ -1509,7 +1558,7 @@
   ACTIONS['new-charter'] = () => {
     const last = S.charters.slice().sort((a, b) => String(b.created_at || b.start_date || '').localeCompare(String(a.created_at || a.start_date || '')))[0];
     charterForm({ tips_prompt: last ? tipsEnabled(last) : true, report_to: last?.report_to || '', fuel_company: boatName(), fuel_by_boat: true,
-      vat_country: last?.vat_country || 'France', vat_rate: last?.vat_rate ?? 20 });
+      vat_country: last?.vat_country || 'France', vat_rate: last?.vat_rate ?? 20, auto_voyage: true });
   };
   ACTIONS['edit-charter'] = b => charterForm(charterById(b.dataset.id));
 
@@ -1562,7 +1611,11 @@
           ${B.voyages.length ? renderFuelDetail(B, st) + `<div class="row-gap wrap">${B.voyages.map(v => `
             <button class="btn btn-ghost btn-sm" data-act="edit-voyage" data-id="${v.id}">${ICON.edit}Modifier « ${esc(v.description || 'voyage')} »</button>
             <button class="btn btn-ghost btn-sm danger" data-act="unlink-voyage" data-id="${v.id}">Délier</button>`).join('')}</div>`
-            : `<p class="muted">Aucun voyage lié. Créez le voyage du charter (ROB départ / arrivée) : la consommation est déduite de vos soutes et facturée au prix TTC du lot utilisé.</p>`}
+            : c.auto_voyage !== false && c.start_date
+              ? `<div class="banner banner-info small">${ICON.drop}<div>Le voyage fuel de ce charter sera <b>créé automatiquement le ${fdate(c.start_date)}</b> (début du charter), avec le ROB au départ calculé ce jour-là.
+                  <br><button class="link-btn" data-act="voyage-now">Créer maintenant</button></div></div>`
+              : `<p class="muted">Aucun voyage lié. Créez le voyage du charter (ROB départ / arrivée) : la consommation est déduite de vos soutes et facturée au prix du lot utilisé.</p>`}
+          ${B.voyages.some(v => toNum(v.rob_after) === null) && c.end_date && c.end_date <= today() ? `<div class="banner banner-gold small">${ICON.drop}<div>Charter terminé : renseignez le <b>ROB à l’arrivée</b> et la répartition par soutage. ${B.voyages.filter(v => toNum(v.rob_after) === null).map(v => `<button class="link-btn" data-act="edit-voyage" data-id="${v.id}">Compléter « ${esc(v.description || 'voyage')} »</button>`).join(' ')}</div></div>` : ''}
         </section>
         <section class="panel">
           <div class="panel-head"><h2>Répartition</h2></div>
@@ -2002,6 +2055,11 @@ ${yacht}`;
     if (!(await confirmDialog('Délier ce voyage du charter ? Le fuel ne sera plus facturé dans cette compta (le voyage reste dans le fuel booklet).', 'Délier'))) return;
     try { await api.update('voyages', b.dataset.id, { charter_id: null }); await reload(); notifyCharter(CURRENT); route(); } catch (e) { toast(errMsg(e), 'err'); }
   };
+  ACTIONS['voyage-now'] = async b => {
+    busy(b, true);
+    try { const c = charterById(CURRENT); await createCharterVoyage(c); await reload(); route(); toast('Voyage fuel créé'); }
+    catch (e) { toast(errMsg(e), 'err'); busy(b, false); }
+  };
   ACTIONS['new-voyage-charter'] = () => {
     const c = charterById(CURRENT);
     voyageForm({ charter_id: c.id, is_charter: true, description: `Charter ${c.client_name || c.title}`, start_date: c.start_date, end_date: c.end_date });
@@ -2203,10 +2261,7 @@ ${yacht}`;
     const isNew = !v.id;
     const sorted = S.voyages.slice().sort(byPos);
     const last = sorted.slice().reverse().find(x => toNum(x.rob_after) !== null);
-    if (isNew && v.rob_before == null && last) {
-      const loadedSince = sum(S.bunkers.filter(b => b.date && last.end_date && b.date > last.end_date), b => b.quantity);
-      v.rob_before = last.rob_after + loadedSince;
-    }
+    if (isNew && v.rob_before == null && last) v.rob_before = suggestRobAt(v.start_date || today());
     let rows = isNew ? [] : S.allocations.filter(a => a.voyage_id === v.id).map(a => ({ bunker_id: a.bunker_id, liters: a.liters }));
     const othersUsed = {};
     S.allocations.filter(a => a.voyage_id !== v.id).forEach(a => { othersUsed[a.bunker_id] = (othersUsed[a.bunker_id] || 0) + (toNum(a.liters) || 0); });
@@ -2237,6 +2292,9 @@ ${yacht}`;
         <button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>`,
     });
     const f = $('#f-voy', m);
+    let robTouched = !isNew;
+    f.rob_before.addEventListener('input', () => { robTouched = true; });
+    f.start_date.addEventListener('change', () => { if (!robTouched) { const r = suggestRobAt(f.start_date.value || today()); if (r != null) { f.rob_before.value = r; status(); } } });
     const cons = () => { const a = toNum(f.rob_before.value), b = toNum(f.rob_after.value); return a != null && b != null ? a - b : null; };
     const drawRows = () => {
       $('#alloc-rows', m).innerHTML = rows.map((r, i) => `<div class="alloc-row">
@@ -2285,7 +2343,7 @@ ${yacht}`;
         !(await confirmDialog(`La répartition (${fmt(sum(clean, r => r.liters))} L) ne correspond pas à la consommation (${fmt(c)} L). Enregistrer quand même ?`, 'Enregistrer', false))) return;
       busy(ev.currentTarget, true);
       try {
-        if (isNew) row.position = Math.max(0, ...S.voyages.map(x => x.position || 0)) + 1;
+        if (isNew) row.position = await placeVoyage(row.start_date);
         const saved = isNew ? await api.insert('voyages', row) : await api.update('voyages', v.id, row);
         await api.removeWhere('allocations', 'voyage_id', saved.id);
         await api.insertMany('allocations', clean.map(r => ({ voyage_id: saved.id, bunker_id: r.bunker_id, liters: toNum(r.liters) })));
