@@ -395,3 +395,5 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 @media screen and (max-width: 760px) { .kpis-6 { grid-template-columns: 1fr 1fr; } }
 .ht-result { margin-top: 8px; }
 [data-analyse] { margin-top: 8px; }
+.row-edit { cursor: pointer; }
+.row-edit:hover td { background: #f8f3ea !important; }

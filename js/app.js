@@ -574,7 +574,7 @@
       </tr>`);
     }
     B.expenses.forEach(e => {
-      rows.push(`<tr>
+      rows.push(`<tr class="${admin ? 'row-edit' : ''}" ${admin ? `data-row-exp="${e.id}"` : ''}>
         <td data-label="${t('num')}">${esc(e.num ?? '')}</td><td data-label="${t('date')}">${fdate(e.date)}</td>
         <td data-label="${t('supplier')}">${esc(e.company)}</td><td data-label="${t('ref')}">${esc(e.invoice_ref)}</td>
         <td data-label="${t('category')}"><span class="chip">${esc(e.category)}</span></td>
@@ -584,7 +584,8 @@
         <td data-label="${t('total')}" class="num strong">${money(e.total, cur)}</td>
         <td data-label="${t('payment')}">${esc(e.method)}</td>
         <td data-label="${t('invoice')}" class="files">${e.billed_by_boat ? boatInvCell(B, e.company) : ''}${e.file_path ? fileLink(e.file_path, t('view')) : ''}</td>
-        ${admin ? `<td class="actions">${locked ? '' : `<button class="icon-btn" data-act="edit-expense" data-id="${e.id}" title="Modifier">${ICON.edit}</button>
+        ${admin ? `<td class="actions">${locked ? `<button class="icon-btn" data-act="locked-edit" data-id="${e.id}" title="Compta clôturée : rouvrir pour modifier">${ICON.lock}</button>`
+          : `<button class="icon-btn" data-act="edit-expense" data-id="${e.id}" title="Modifier">${ICON.edit}</button>
           <button class="icon-btn danger" data-act="del-expense" data-id="${e.id}" title="Supprimer">${ICON.trash}</button>`}</td>` : ''}
       </tr>`);
     });
@@ -1787,8 +1788,23 @@ ${yacht}`;
       await api.update('charters', c.id, { status: 'open', closed_at: null, client_signature: null, client_signed_name: null,
         client_signed_at: null, tips_pct: null, tips_amount: null, report_sent_at: null });
       await reload(); notifyCharter(c.id); route(); toast('Compta rouverte');
-    } catch (e) { toast(errMsg(e), 'err'); }
+      return true;
+    } catch (e) { toast(errMsg(e), 'err'); return false; }
   };
+  // Dépense d'une compta clôturée / signée : proposer de rouvrir puis ouvrir la modification
+  ACTIONS['locked-edit'] = async b => {
+    const c = charterById(CURRENT), id = b.dataset.id;
+    if (await ACTIONS.reopen({ dataset: { id: c.id } })) expenseForm(S.expenses.find(x => x.id === id));
+  };
+  // Clic sur une ligne de dépense = modifier (sauf clic sur un lien / bouton)
+  document.addEventListener('click', e => {
+    if (IS_CLIENT) return;
+    const tr = e.target.closest('tr[data-row-exp]');
+    if (!tr || e.target.closest('a,button,input,select,label')) return;
+    const c = charterById(CURRENT); if (!c) return;
+    if (c.status === 'open') expenseForm(S.expenses.find(x => x.id === tr.dataset.rowExp));
+    else ACTIONS['locked-edit']({ dataset: { id: tr.dataset.rowExp } });
+  });
 
   ACTIONS['master-sign'] = () => {
     const c = charterById(CURRENT);
