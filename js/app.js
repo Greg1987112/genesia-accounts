@@ -242,7 +242,8 @@
   // ------------------------------------------------------------------
   //  Back-ends : Supabase (production) ou Démo (navigateur)
   // ------------------------------------------------------------------
-  const TABLES = ['charters', 'expenses', 'cash_withdrawals', 'bunkers', 'voyages', 'allocations', 'boat_profile', 'invoices'];
+  const TABLES = ['charters', 'expenses', 'cash_withdrawals', 'bunkers', 'voyages', 'allocations', 'boat_profile', 'invoices', 'charter_documents'];
+  const OPTIONAL_TABLES = ['charter_documents']; // table absente tant que la mise à jour SQL n'est pas faite → liste vide
 
   class SupabaseBackend {
     async init() {
@@ -261,7 +262,7 @@
     async loadAll() {
       const res = await Promise.all(TABLES.map(tb => this.sb.from(tb).select('*').limit(10000)));
       const S = {};
-      res.forEach((r, i) => { if (r.error) throw r.error; S[TABLES[i]] = r.data; });
+      res.forEach((r, i) => { if (r.error) { if (OPTIONAL_TABLES.includes(TABLES[i])) { S[TABLES[i]] = []; S._missing = [...(S._missing || []), TABLES[i]]; return; } throw r.error; } S[TABLES[i]] = r.data; });
       return S;
     }
     async insert(table, row) {
@@ -364,7 +365,7 @@
       if (table === 'bunkers' && this.S.allocations.some(a => a.bunker_id === id)) throw new Error('Ce soutage est utilisé dans des voyages : retirez d’abord ses répartitions.');
       this.S[table] = this.S[table].filter(x => x.id !== id);
       if (table === 'charters') {
-        ['expenses', 'cash_withdrawals'].forEach(tb => { this.S[tb] = this.S[tb].filter(x => x.charter_id !== id); });
+        ['expenses', 'cash_withdrawals', 'charter_documents'].forEach(tb => { this.S[tb] = (this.S[tb] || []).filter(x => x.charter_id !== id); });
         this.S.voyages.forEach(v => { if (v.charter_id === id) v.charter_id = null; });
       }
       if (table === 'voyages') this.S.allocations = this.S.allocations.filter(a => a.voyage_id !== id);
@@ -428,6 +429,7 @@
   const svg = p => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
   const ICON = {
     file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+    folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
     edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
     trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
@@ -1388,7 +1390,7 @@
   async function route() {
     closeModal();
     const parts = (location.hash.replace(/^#\/?/, '') || 'charters').split('/');
-    if (parts[0] === 'charter' && parts[1]) return viewCharter(parts[1]);
+    if (parts[0] === 'charter' && parts[1]) return viewCharter(parts[1], parts[2]);
     if (parts[0] === 'fuel') return viewFuel(parts[1] || 'voyages');
     if (parts[0] === 'settings') return viewSettings();
     if (parts[0] === 'invoices') return viewInvoices(parts[1]);
@@ -1542,9 +1544,11 @@
   };
 
   // ---------------- Liste des charters ----------------
+  const charterYear = c => String(c.start_date || c.end_date || c.created_at || '').slice(0, 4) || 'Sans date';
+  const OPEN_YEARS = new Set();
   function viewCharters() {
     const list = S.charters.slice().sort((a, b) => String(b.start_date || '').localeCompare(String(a.start_date || '')));
-    const cards = list.map(c => {
+    const card = c => {
       const st = computeStatement(buildBundle(S, c));
       return `<a class="charter-card" href="#/charter/${c.id}">
         <div class="cc-top">${statusBadge(c)}
@@ -1553,12 +1557,23 @@
         <div class="cc-figs"><div><span>Dépenses</span><b>${money(st.total, c.currency)}</b></div>
           <div><span>Solde APA</span><b class="${st.balance < 0 ? 'neg' : 'pos'}">${money(st.balance, c.currency)}</b></div></div>
       </a>`;
+    };
+    const years = [...new Set(list.map(charterYear))].sort((a, b) => b.localeCompare(a));
+    if (!OPEN_YEARS.size && years.length) OPEN_YEARS.add(years.includes(String(new Date().getFullYear())) ? String(new Date().getFullYear()) : years[0]);
+    const folders = years.map(y => {
+      const cs = list.filter(c => charterYear(c) === y);
+      const open = OPEN_YEARS.has(y);
+      return `<details class="year-folder" data-year="${esc(y)}" ${open ? 'open' : ''}>
+        <summary>${ICON.folder}<span class="yf-name">${esc(y)}</span><span class="yf-count">${cs.length} charter${cs.length > 1 ? 's' : ''}</span>
+          ${cs.some(c => c.status !== 'signed') ? `<span class="badge badge-open">${cs.filter(c => c.status !== 'signed').length} en cours</span>` : ''}<span class="yf-chev">›</span></summary>
+        <div class="cards">${cs.map(card).join('')}</div></details>`;
     }).join('');
     $('#app').innerHTML = shell('charters', `
       <div class="page-head"><div><div class="eyebrow">Comptabilité</div><h1>Charters</h1></div>
         <button class="btn btn-primary" data-act="new-charter">${ICON.plus}Nouveau charter</button></div>
-      ${list.length ? `<div class="cards">${cards}</div>` : `<div class="empty-state card"><p>Aucun charter pour le moment.</p>
+      ${list.length ? `<div class="year-folders">${folders}</div>` : `<div class="empty-state card"><p>Aucun charter pour le moment.</p>
         <button class="btn btn-primary" data-act="new-charter">${ICON.plus}Créer le premier charter</button></div>`}`);
+    $$('.year-folder').forEach(d => d.addEventListener('toggle', () => { d.open ? OPEN_YEARS.add(d.dataset.year) : OPEN_YEARS.delete(d.dataset.year); }));
   }
 
   // ---------------- Formulaire charter ----------------
@@ -1647,13 +1662,80 @@
     if (del) del.onclick = async () => {
       if (!(await confirmDialog(`Supprimer définitivement « ${esc(c.title)} » et toutes ses dépenses ?`, 'Supprimer'))) return;
       try {
-        const files = S.expenses.filter(e => e.charter_id === c.id && e.file_path).map(e => e.file_path);
+        const files = [...S.expenses, ...(S.charter_documents || [])].filter(e => e.charter_id === c.id && e.file_path).map(e => e.file_path);
         await api.remove('charters', c.id);
         for (const p of files) await api.removeFile(p).catch(() => {});
         await reload(); location.hash = '#/charters'; toast('Charter supprimé');
       } catch (e) { toast(errMsg(e), 'err'); }
     };
   }
+  // ---------------- Dossiers Preference list / Itinerary ----------------
+  function viewCharterFolder(c, tab) {
+    const [, label, sub] = FOLDERS.find(f => f[0] === tab);
+    const docs = (S.charter_documents || []).filter(d => d.charter_id === c.id && d.folder === tab)
+      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const missing = (S._missing || []).includes('charter_documents');
+    const item = d => d.file_path
+      ? `<div class="doc-item"><div class="doc-main">${fileLink(d.file_path, d.title || d.file_name || 'Fichier')}
+          <small class="muted">${d.title && d.file_name && d.title !== d.file_name ? esc(d.file_name) + ' · ' : ''}ajouté le ${fdatetime(d.created_at)}</small></div>
+          <button class="icon-btn danger" data-act="doc-del" data-id="${d.id}" title="Supprimer">${ICON.trash}</button></div>`
+      : `<div class="doc-item doc-note"><div class="doc-ico">${ICON.edit}</div><div class="doc-main"><b>${esc(d.title || 'Note')}</b>
+          <div class="doc-text">${esc(d.note || '')}</div><small class="muted">${fdatetime(d.created_at)}</small></div>
+          <div class="row-gap"><button class="icon-btn" data-act="doc-note" data-id="${d.id}" title="Modifier">${ICON.edit}</button>
+          <button class="icon-btn danger" data-act="doc-del" data-id="${d.id}" title="Supprimer">${ICON.trash}</button></div></div>`;
+    $('#app').innerHTML = shell('charters', `
+      <a class="back" href="#/charters">${ICON.back}Charters</a>
+      <div class="page-head">
+        <div><div class="eyebrow">${esc(c.yacht || YACHT)}</div><h1>${esc(c.title)}</h1>
+          <p class="muted">${esc(c.client_name || '')}${c.client_name ? ' · ' : ''}${fdate(c.start_date)} → ${fdate(c.end_date)} · ${statusBadge(c)}</p></div>
+        <div class="head-actions"><button class="btn btn-ghost" data-act="edit-charter" data-id="${c.id}">${ICON.edit}Modifier</button></div>
+      </div>
+      ${folderTabs(c, tab)}
+      ${missing ? `<div class="banner banner-gold">${ICON.lock}<div>Pour utiliser ce dossier, exécutez une fois le fichier <b>maj-dossiers.sql</b> dans Supabase (SQL Editor), puis rechargez la page.</div></div>` : ''}
+      <section class="panel">
+        <div class="panel-head"><h2>${esc(label)}</h2>
+          ${missing ? '' : `<div class="row-gap"><button class="btn btn-ghost btn-sm" data-act="doc-note" data-folder="${tab}">${ICON.edit}Ajouter une note</button>
+            <label class="btn btn-primary btn-sm file-btn">${ICON.plus}Ajouter des fichiers<input type="file" multiple class="sr-file" data-doc-upload="${tab}"
+              accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.heic,.pages,.numbers,.key"></label></div>`}</div>
+        <p class="muted small">${esc(sub)} — dossier privé : visible uniquement par vous (pas dans la vue client).</p>
+        ${docs.length ? `<div class="doc-list">${docs.map(item).join('')}</div>`
+          : `<div class="empty-state"><p class="muted">Dossier vide. Ajoutez des fichiers (PDF, photos, Word, Excel…) ou une note.</p></div>`}
+      </section>`);
+    const inp = $('[data-doc-upload]');
+    if (inp) inp.addEventListener('change', async () => {
+      const files = [...inp.files]; if (!files.length) return;
+      let ok = 0;
+      for (const f of files) {
+        try { toast(`Envoi de « ${f.name} »…`);
+          const up = await api.upload(f, `docs/${c.id}/${tab}`);
+          await api.insert('charter_documents', { charter_id: c.id, folder: tab, title: f.name, ...up }); ok++; }
+        catch (e) { toast(`${f.name} : ${errMsg(e)}`, 'err'); }
+      }
+      await reload(); route(); if (ok) toast(ok > 1 ? `${ok} fichiers ajoutés` : 'Fichier ajouté');
+    });
+  }
+  ACTIONS['doc-note'] = b => {
+    const d = b.dataset.id ? S.charter_documents.find(x => x.id === b.dataset.id) : null;
+    const folder = d ? d.folder : b.dataset.folder;
+    const m = openModal({ title: d ? 'Modifier la note' : 'Nouvelle note', wide: true,
+      body: `<form class="form-grid" id="f-note"><label class="field span-2"><span>Titre</span><input name="title" value="${esc(d?.title || '')}" placeholder="${folder === 'itinerary' ? 'ex. Jour 1 — Cannes → Saint-Tropez' : 'ex. Allergies / boissons'}"></label>
+        <label class="field span-2"><span>Note</span><textarea name="note" rows="10" required>${esc(d?.note || '')}</textarea></label></form>`,
+      footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>` });
+    $('[data-ok]', m).onclick = async ev => {
+      const f = $('#f-note', m); if (!f.reportValidity()) return; busy(ev.currentTarget, true);
+      const row = { title: f.title.value.trim() || null, note: f.note.value };
+      try { d ? await api.update('charter_documents', d.id, row) : await api.insert('charter_documents', { charter_id: CURRENT, folder, ...row });
+        await reload(); closeModal(); route(); toast('Note enregistrée'); }
+      catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
+    };
+  };
+  ACTIONS['doc-del'] = async b => {
+    const d = S.charter_documents.find(x => x.id === b.dataset.id); if (!d) return;
+    if (!(await confirmDialog(`Supprimer « ${esc(d.title || d.file_name || 'Note')} » ?`, 'Supprimer'))) return;
+    try { await api.remove('charter_documents', d.id); if (d.file_path) api.removeFile(d.file_path).catch(() => {}); await reload(); route(); toast('Supprimé'); }
+    catch (e) { toast(errMsg(e), 'err'); }
+  };
+
   // Ligne de dépense automatique « Bank fee » = APA reçu × % (suit l'APA et le taux du charter)
   const nextExpenseNum = cid => Math.max(1, ...S.expenses.filter(x => x.charter_id === cid).map(x => x.num || 0)) + 1;
   async function syncBrokerFee(c) {
@@ -1682,10 +1764,20 @@
 
   // ---------------- Détail d'un charter ----------------
   let CURRENT = null;
-  function viewCharter(id) {
+  const FOLDERS = [['apa', 'APA', 'Comptabilité'], ['preferences', 'Preference list', 'Préférences des invités'], ['itinerary', 'Itinerary', 'Itinéraire']];
+  function folderTabs(c, tab) {
+    const n = f => (S.charter_documents || []).filter(d => d.charter_id === c.id && d.folder === f).length;
+    return `<nav class="folder-tabs no-print">${FOLDERS.map(([k, l, sub]) => {
+      const cnt = k === 'apa' ? S.expenses.filter(e => e.charter_id === c.id).length : n(k);
+      return `<a href="#/charter/${c.id}${k === 'apa' ? '' : '/' + k}" class="folder-tab ${tab === k ? 'on' : ''}">${ICON.folder}
+        <span><b>${l}</b><small><span class="ft-sub">${sub}</span>${cnt ? `<span class="ft-sub"> · </span>${cnt} ${k === 'apa' ? 'dép.' : 'élém.'}` : ''}</small></span></a>`; }).join('')}</nav>`;
+  }
+  function viewCharter(id, tab = 'apa') {
     const c = charterById(id);
     if (!c) { location.hash = '#/charters'; return; }
     CURRENT = id;
+    if (!FOLDERS.some(f => f[0] === tab)) tab = 'apa';
+    if (tab !== 'apa') return viewCharterFolder(c, tab);
     const B = buildBundle(S, c), st = computeStatement(B);
     const signed = c.status === 'signed', closed = c.status === 'closed', locked = signed || closed;
     const freeVoyages = S.voyages.filter(v => !v.charter_id);
@@ -1708,6 +1800,7 @@
           <button class="btn btn-ghost" data-act="edit-charter" data-id="${c.id}">${ICON.edit}Modifier</button>
         </div>
       </div>
+      ${folderTabs(c, 'apa')}
       ${signed ? `<div class="banner banner-ok">${ICON.check}<div><strong>Comptabilité signée par ${esc(c.client_signed_name)}</strong> le ${fdatetime(c.client_signed_at)}${st.tipsAuto ? ` — tips choisis : <b>${money(st.tipsAuto, c.currency)}</b>${c.tips_pct != null ? ` (${fmt(c.tips_pct, c.tips_pct % 1 ? 2 : 0)} % du charter fee)` : ''}` : ''}.
         Les dépenses sont verrouillées. <button class="link-btn" data-act="reopen" data-id="${c.id}">Rouvrir la compta</button>
         <br>${c.report_sent_at ? `Rapport envoyé le ${fdatetime(c.report_sent_at)}${c.report_to ? ` à ${esc(c.report_to)}` : ''}. <button class="link-btn" data-act="send-report" data-id="${c.id}">Renvoyer</button>`

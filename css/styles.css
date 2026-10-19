@@ -423,3 +423,44 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .kpi-vatbal .kpi-sub { color: #a8702f; }
 .kpi-validate { margin-top: 8px; display: inline-block; font-size: 12px; font-weight: 600; color: #8a4a06;
   background: #ffe2bd; border-radius: 8px; padding: 3px 10px; }
+
+/* Dossiers par année (liste des charters) */
+.year-folders { display: flex; flex-direction: column; gap: 14px; }
+.year-folder { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.year-folder > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 14px 18px; user-select: none; }
+.year-folder > summary::-webkit-details-marker { display: none; }
+.year-folder > summary svg { width: 24px; height: 24px; color: var(--gold); flex: none; }
+.yf-name { font-family: 'Cormorant Garamond', serif; font-size: 1.5rem; font-weight: 700; color: var(--navy); }
+.yf-count { color: var(--ink-2); font-size: .9rem; }
+.yf-chev { margin-left: auto; font-size: 1.4rem; color: var(--ink-2); transition: transform .15s; }
+.year-folder[open] .yf-chev { transform: rotate(90deg); }
+.year-folder[open] > summary { border-bottom: 1px solid var(--line); }
+.year-folder > .cards { padding: 16px; }
+
+/* Dossiers d'un charter : APA / Preference list / Itinerary */
+.folder-tabs { display: flex; gap: 10px; margin: 4px 0 18px; overflow-x: auto; padding-bottom: 2px; }
+.folder-tab { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); text-decoration: none; color: var(--ink); min-width: 170px; flex: 1 1 0; box-shadow: var(--shadow); }
+.folder-tab svg { width: 26px; height: 26px; color: var(--gold); flex: none; }
+.folder-tab > span { display: flex; flex-direction: column; line-height: 1.25; }
+.folder-tab small { color: var(--ink-2); font-size: .78rem; }
+.folder-tab.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+.folder-tab.on small { color: #d9e2ec; }
+.folder-tab.on svg { color: var(--gold); fill: rgba(201, 162, 90, .25); }
+.sr-file { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.file-btn { position: relative; cursor: pointer; }
+.doc-list { display: flex; flex-direction: column; gap: 10px; }
+.doc-item { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fdfcf9; }
+.doc-ico { color: var(--gold); padding-top: 2px; }
+.doc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.doc-main .file-link { font-weight: 600; word-break: break-word; }
+.doc-text { white-space: pre-wrap; margin: 4px 0; }
+@media (max-width: 760px) { .folder-tab { min-width: 140px; padding: 9px 12px; } .year-folder > .cards { padding: 12px; } }
+@media (max-width: 760px) {
+  .folder-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; overflow: visible; }
+  .folder-tab { min-width: 0; flex-direction: column; text-align: center; gap: 4px; padding: 10px 6px; }
+  .folder-tab > span { align-items: center; }
+  .folder-tab b { font-size: .85rem; }
+  .folder-tab small { font-size: .72rem; }
+  .folder-tab .ft-sub { display: none; }
+}
