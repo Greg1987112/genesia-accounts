@@ -470,7 +470,10 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
   background: #faf7f0; border: 1px solid var(--line); border-radius: 10px; font-size: .9rem; }
 .plan-params input { width: 76px; padding: 5px 8px; margin: 0 4px; }
 .itin-table td, .itin-table th { white-space: nowrap; }
-.itin-table td.itin-trip { white-space: normal; min-width: 240px; max-width: 380px; }
+.itin-table td.itin-trip { white-space: normal; min-width: 190px; max-width: 300px; }
+.itin-table td, .itin-table th { padding-left: 6px; padding-right: 6px; }
+.itin-table .icon-btn { width: 28px; height: 28px; padding: 4px; }
+.itin-table td.actions { padding-left: 2px; padding-right: 2px; }
 .itin-rem { font-size: .82rem; color: var(--ink-2); margin-top: 3px; line-height: 1.35; }
 .itin-table tr.same-day td { border-top: 1px dashed var(--line); }
 .itin-table td.actions { white-space: nowrap; }
@@ -482,3 +485,11 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .itin-totals .neg b { color: var(--bad); }
 .leg-preview { background: #faf7f0; border-radius: 8px; padding: 8px 12px; }
 @media (max-width: 760px) { .itin-table td.itin-trip { min-width: 0; max-width: none; flex-direction: column; align-items: flex-end; } .itin-rem { text-align: right; } .plan-params input { width: 64px; } }
+.opt-badge { display: inline-block; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 7px;
+  border-radius: 6px; background: #eef1f5; color: var(--ink-2); margin-right: 6px; vertical-align: 1px; }
+.opt-badge.on { background: var(--ok-soft); color: var(--ok); }
+.itin-table tr.leg-alt td { background: #f7f5f0; color: var(--ink-2); }
+.itin-table tr.leg-alt td b { color: var(--ink-2); }
+.opt-diff { font-size: .8rem; margin-top: 3px; }
+.btn-xs { padding: 3px 8px; font-size: .75rem; border-radius: 7px; min-height: 0; }
+.shore-badge { display: inline-block; font-size: .72rem; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: #e3f0fb; color: #1d5f99; white-space: nowrap; }

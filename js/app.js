@@ -429,6 +429,7 @@
   const svg = p => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
   const ICON = {
     file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+    fork: svg('<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5"/>'),
     folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
     edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
@@ -1750,7 +1751,7 @@
       let lp = null; try { lp = last ? JSON.parse(last.note) : null; } catch { lp = null; }
       p = { eng_lph: lp?.eng_lph ?? PLAN_DEFAULTS.eng_lph, gen_lph: lp?.gen_lph ?? PLAN_DEFAULTS.gen_lph, speed: lp?.speed ?? PLAN_DEFAULTS.speed, legs: [] };
     }
-    p.legs = p.legs || [];
+    p.legs = (p.legs || []).map((l, k) => l.id ? l : { ...l, id: 'leg' + k }); // id stable tant que non enregistré
     return p;
   }
   async function savePlan(c, p) {
@@ -1768,14 +1769,25 @@
   function computePlan(c, p) {
     const first = p.legs.map(l => l.date).filter(Boolean).sort()[0] || c.start_date;
     let cumD = 0, cumL = 0, cumH = 0, eng = 0, gen = 0, prevDate = null;
+    // Générateur = par JOURNÉE (on peut bouger plusieurs fois le même jour) : heures du jour = somme des lignes du jour, max 24 h,
+    // comptées une seule fois sur le premier trajet du jour.
+    const dayKey = (l, i) => l.date || 'row' + i, dayGen = {}, firstOfDay = {};
+    const shoreDay = {}; // à quai, branché sur le quai : pas de générateur ce jour-là
+    p.legs.forEach((l, i) => { if (l.alt) return; const k = dayKey(l, i); dayGen[k] = Math.min(24, (dayGen[k] || 0) + (toNum(l.gen_h) || 0)); if (l.shore) shoreDay[k] = true; if (firstOfDay[k] == null) firstOfDay[k] = i; });
+    Object.keys(shoreDay).forEach(k => { dayGen[k] = 0; });
     const rows = p.legs.map((l, i) => {
-      const dist = toNum(l.dist) || 0, speed = toNum(l.speed) || toNum(p.speed) || 0, genH = toNum(l.gen_h) || 0;
+      const k = dayKey(l, i), isFirst = firstOfDay[k] === i;
+      const dist = toNum(l.dist) || 0, speed = toNum(l.speed) || toNum(p.speed) || 0, genH = l.alt ? toNum(l.gen_h) || 0 : isFirst ? dayGen[k] : 0;
       const hours = dist > 0 && speed > 0 ? dist / speed : 0;
       const lEng = r2(hours * (toNum(p.eng_lph) || 0)), lGen = r2(genH * (toNum(p.gen_lph) || 0)), cons = r2(lEng + lGen);
-      cumD = r2(cumD + dist); cumL = r2(cumL + cons); cumH += hours; eng += lEng; gen += lGen;
+      if (!l.alt) { cumD = r2(cumD + dist); cumL = r2(cumL + cons); cumH += hours; eng += lEng; gen += lGen; }
       const sameDay = l.date && l.date === prevDate; prevDate = l.date;
-      return { ...l, i, day: l.date && first ? dayDiff(l.date, first) + 1 : null, sameDay, dist, speed, genH, hours, cons, cumD, cumL, eta: hours ? clock(l.etd, hours) : '' };
+      const grp = l.group ? p.legs.filter(x => x.group === l.group) : [];
+      const optLetter = grp.length > 1 ? String.fromCharCode(65 + grp.indexOf(l)) : '';
+      return { ...l, i, shoreDay: !!shoreDay[k] && isFirst, day: l.date && first ? dayDiff(l.date, first) + 1 : null, sameDay, dist, speed, genH, hours, cons, cumD, cumL, optLetter, grpN: grp.length,
+        eta: hours ? clock(l.etd, hours) : '' };
     });
+    rows.forEach(r => { if (r.alt && r.group) { const ch = rows.find(x => x.group === r.group && !x.alt); r.diff = ch ? r2(r.cons - ch.cons) : null; r.diffD = ch ? r2(r.dist - ch.dist) : null; } });
     const voy = S.voyages.filter(v => v.charter_id === c.id).sort(byPos)[0];
     const rob = toNum(voy?.rob_before);
     return { rows, totalD: cumD, totalH: cumH, totalL: cumL, eng: r2(eng), gen: r2(gen), rob, robEnd: rob != null ? r2(rob - cumL) : null, voy };
@@ -1784,22 +1796,23 @@
     const p = getPlan(c), P = computePlan(c, p);
     const hasGps = p.legs.some(l => l.gps || l.gps_link);
     const gps = s => !s ? '' : /^https?:\/\//.test(s) ? `<a href="${esc(s)}" target="_blank" rel="noopener">Carte ↗</a>` : esc(s);
-    const rows = P.rows.map(r => `<tr class="row-click ${r.sameDay ? 'same-day' : ''}" data-leg="${r.i}">
+    const rows = P.rows.map(r => `<tr class="row-click ${r.sameDay ? 'same-day' : ''} ${r.alt ? 'leg-alt' : ''} ${r.optLetter && !r.alt ? 'leg-chosen' : ''}" data-leg="${r.i}">
         <td data-label="Day" class="num">${r.sameDay ? '' : (r.day ?? '')}</td>
         <td data-label="Date">${r.sameDay ? '' : fdate(r.date)}</td>
-        <td data-label="Trip" class="itin-trip"><b>${esc(r.trip || '') || '<span class="muted">— à compléter —</span>'}</b>${r.remarks ? `<div class="itin-rem">${esc(r.remarks)}</div>` : ''}</td>
+        <td data-label="Trip" class="itin-trip">${r.optLetter ? `<span class="opt-badge ${r.alt ? '' : 'on'}">Option ${r.optLetter}${r.alt ? '' : ' · retenue'}</span>` : ''}<b>${esc(r.trip || '') || '<span class="muted">— à compléter —</span>'}</b>
+          ${r.alt ? `<div class="opt-diff">${r.diff != null ? `${r.diff > 0 ? '+' : ''}${fmt(r.diff)} L · ${r.diffD > 0 ? '+' : ''}${fmt(r.diffD)} NM vs option retenue` : ''} <button class="link-btn" data-act="leg-choose" data-i="${r.i}">Retenir cette option</button></div>` : ''}${r.remarks ? `<div class="itin-rem">${esc(r.remarks)}</div>` : ''}</td>
         ${hasGps ? `<td data-label="Position GPS">${gps(r.gps_link)}${r.gps_link && r.gps ? ' · ' : ''}${esc(r.gps || '')}</td>` : ''}
         <td data-label="Distance NM" class="num">${r.dist ? fmt(r.dist) : ''}</td>
-        <td data-label="Cumul NM" class="num">${fmt(r.cumD)}</td>
+        <td data-label="Cumul NM" class="num">${r.alt ? '—' : fmt(r.cumD)}</td>
         <td data-label="Speed kn" class="num">${r.dist ? fmt(r.speed, r.speed % 1 ? 1 : 0) : ''}</td>
         <td data-label="Sailing time" class="num">${r.hours ? hhmm(r.hours) : ''}</td>
-        <td data-label="Générateur" class="num">${r.genH ? r.genH + ' h' : ''}</td>
+        <td data-label="Générateur" class="num">${r.shoreDay ? '<span class="shore-badge" title="À quai, branché : pas de générateur">⚡ À quai</span>' : r.genH ? r.genH + ' h' : r.sameDay ? '<span class="muted">—</span>' : ''}</td>
         <td data-label="Conso (L)" class="num"><b>${fmt(r.cons)}</b></td>
-        <td data-label="Conso cumul (L)" class="num">${fmt(r.cumL)}</td>
+        <td data-label="Conso cumul (L)" class="num">${r.alt ? '—' : fmt(r.cumL)}</td>
         <td data-label="ETD" class="num">${esc(r.etd || '')}</td>
         <td data-label="ETA" class="num">${esc(r.eta)}</td>
         <td class="actions"><button class="icon-btn" data-act="leg-edit" data-i="${r.i}" title="Modifier">${ICON.edit}</button>
-          <button class="icon-btn" data-act="leg-same" data-i="${r.i}" title="Ajouter une étape le même jour">${ICON.plus}</button>
+          ${r.alt ? '' : `<button class="btn btn-ghost btn-xs" data-act="leg-same" data-i="${r.i}" title="Ajouter un autre trajet ce jour-là">+ trajet</button>`}
           <button class="icon-btn danger" data-act="leg-del" data-i="${r.i}" title="Supprimer">${ICON.trash}</button></td></tr>`).join('');
     return `<section class="panel itin">
       <div class="panel-head"><h2>Programme & consommation</h2>
@@ -1842,7 +1855,10 @@
   }
   function legForm(c, i, preset) {
     const p = getPlan(c), isNew = i == null, l = isNew ? preset : p.legs[i];
-    const m = openModal({ title: isNew ? 'Nouvelle étape' : 'Modifier l’étape', wide: true,
+    const sameDayExtra = isNew ? !!preset?._sameDay : p.legs.findIndex(x => !x.alt && x.date && x.date === l.date) !== i && !!l.date;
+    const dayShoreNow = !isNew && (l.date ? p.legs.some(x => !x.alt && x.date === l.date && x.shore) : !!l.shore);
+    const dayGenNow = !isNew && l.date ? Math.min(24, sum(p.legs.filter(x => !x.alt && x.date === l.date), x => toNum(x.gen_h) || 0)) : null;
+    const m = openModal({ title: isNew ? (preset?._group ? 'Autre trajet possible (option)' : 'Nouvelle étape') : (l.group ? 'Modifier l’option' : 'Modifier l’étape'), wide: true,
       body: `<form class="form-grid" id="f-leg">
         <label class="field"><span>Date</span><input type="date" name="date" value="${esc(l.date || '')}"></label>
         <label class="field"><span>Trip <small>(ex. Hydra/Agistri)</small></span><input name="trip" value="${esc(l.trip || '')}" required></label>
@@ -1850,37 +1866,63 @@
         <label class="field"><span>Position GPS</span><input name="gps" value="${esc(l.gps || '')}" placeholder="37°20'N 23°28'E"></label>
         <label class="field"><span>Distance (NM) <small>(0 = à l’ancre / au port)</small></span><input type="number" step="0.1" min="0" name="dist" value="${esc(l.dist ?? '')}"></label>
         <label class="field"><span>Vitesse (nœuds)</span><input type="number" step="0.5" min="0" name="speed" value="${esc(l.speed ?? p.speed)}"></label>
-        <label class="field"><span>Heures générateur <small>(12 = ½ journée, 24 = journée)</small></span><input type="number" step="0.5" min="0" name="gen_h" value="${esc(l.gen_h ?? 24)}"></label>
+        ${sameDayExtra ? `<input type="hidden" name="gen_h" value="0"><div class="field muted small">Générateur : compté une seule fois pour la journée (sur le 1<sup>er</sup> trajet du jour).</div>`
+          : `<label class="field"><span>Heures générateur de la journée <small>(12 = ½ journée, 24 = journée)</small></span><input type="number" step="0.5" min="0" max="24" name="gen_h" value="${esc(dayGenNow ?? l.gen_h ?? 24)}"></label>
+            <label class="check span-2 boat-toggle"><input type="checkbox" name="shore" ${dayShoreNow ? 'checked' : ''}>
+              <span><b>⚡ À quai — branché sur le quai</b> : pas de consommation générateur ce jour-là</span></label>`}
         <label class="field"><span>ETD (heure de départ)</span><input type="time" name="etd" value="${esc(l.etd || '')}"></label>
         <label class="field span-2"><span>Remarks / Suggestions</span><textarea name="remarks" rows="3">${esc(l.remarks || '')}</textarea></label>
         <div class="span-2 leg-preview muted small" id="leg-prev"></div></form>`,
       footer: `${!isNew ? `<button class="btn btn-ghost danger mr-auto" data-del>${ICON.trash}Supprimer</button>` : ''}<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>` });
     const f = $('#f-leg', m);
-    const prev = () => { const d = toNum(f.dist.value) || 0, s = toNum(f.speed.value) || 0, g = toNum(f.gen_h.value) || 0, h = d && s ? d / s : 0;
+    const genOn = () => !(f.shore && f.shore.checked);
+    if (f.shore) { const sync = () => { f.gen_h.disabled = f.shore.checked; }; f.shore.addEventListener('change', sync); sync(); }
+    const prev = () => { const d = toNum(f.dist.value) || 0, s = toNum(f.speed.value) || 0, g = genOn() ? toNum(f.gen_h.value) || 0 : 0, h = d && s ? d / s : 0;
       $('#leg-prev', m).innerHTML = `Temps de navigation <b>${h ? hhmm(h) : '—'}</b> · ETA <b>${h && f.etd.value ? clock(f.etd.value, h) : '—'}</b> · Consommation estimée <b>${fmt(r2(h * (toNum(p.eng_lph) || 0) + g * (toNum(p.gen_lph) || 0)))} L</b>`; };
     f.addEventListener('input', prev); prev();
     $('[data-ok]', m).onclick = async ev => {
       if (!f.reportValidity()) return; busy(ev.currentTarget, true);
       const leg = { date: f.date.value || null, trip: f.trip.value.trim(), gps_link: f.gps_link.value.trim() || null, gps: f.gps.value.trim() || null,
-        dist: toNum(f.dist.value) ?? 0, speed: toNum(f.speed.value), gen_h: toNum(f.gen_h.value) ?? 0, etd: f.etd.value || null, remarks: f.remarks.value.trim() || null };
+        dist: toNum(f.dist.value) ?? 0, speed: toNum(f.speed.value), gen_h: toNum(f.gen_h.value) ?? 0, etd: f.etd.value || null, remarks: f.remarks.value.trim() || null,
+        ...(f.shore ? { shore: f.shore.checked } : {}) };
       const q = getPlan(c);
-      if (isNew) { if (preset?._after != null) q.legs.splice(preset._after + 1, 0, leg); else q.legs.push(leg); } else q.legs[i] = leg;
+      if (!sameDayExtra && leg.date) q.legs.forEach((x, j) => { if (j !== i && !x.alt && x.date === leg.date) { x.gen_h = 0; delete x.shore; } }); // générateur porté par le 1er trajet du jour
+      if (isNew) {
+        leg.id = uuid();
+        if (preset?._group) { leg.group = preset._group; leg.alt = true; const base = q.legs.find(x => x.id === preset._base); if (base && !base.group) base.group = preset._group; }
+        if (preset?._after != null) q.legs.splice(preset._after + 1, 0, leg); else q.legs.push(leg);
+      } else q.legs[i] = { ...q.legs[i], ...leg };
       try { await savePlan(c, q); closeModal(); route(); } catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
     };
     const del = $('[data-del]', m); if (del) del.onclick = () => { closeModal(); delLeg(c, i); };
   }
   async function delLeg(c, i) {
     const p = getPlan(c); if (!(await confirmDialog(`Supprimer l’étape « ${esc(p.legs[i]?.trip || '')} » ?`, 'Supprimer'))) return;
-    p.legs.splice(i, 1); try { await savePlan(c, p); route(); } catch (e) { toast(errMsg(e), 'err'); }
+    const [gone] = p.legs.splice(i, 1);
+    if (gone && !gone.alt && gone.date && toNum(gone.gen_h)) { const nx = p.legs.find(x => !x.alt && x.date === gone.date); if (nx) nx.gen_h = Math.min(24, (toNum(nx.gen_h) || 0) + toNum(gone.gen_h)); }
+    if (gone?.group) { const rest = p.legs.filter(x => x.group === gone.group);
+      if (rest.length === 1) { delete rest[0].group; rest[0].alt = false; } else if (rest.length && !gone.alt) rest[0].alt = false; }
+    try { await savePlan(c, p); route(); } catch (e) { toast(errMsg(e), 'err'); }
   }
   ACTIONS['leg-new'] = () => { const c = charterById(CURRENT), p = getPlan(c), last = p.legs[p.legs.length - 1];
     legForm(c, null, { date: last?.date ? addDays(last.date, 1) : (c.start_date || today()), speed: p.speed, gen_h: 24, etd: '08:00' }); };
   ACTIONS['leg-edit'] = b => legForm(charterById(CURRENT), +b.dataset.i);
   ACTIONS['leg-del'] = b => delLeg(charterById(CURRENT), +b.dataset.i);
-  ACTIONS['leg-same'] = async b => { // étape supplémentaire le même jour : générateur partagé (12 h + 12 h)
+  ACTIONS['leg-same'] = async b => { // trajet supplémentaire le même jour (on peut bouger plusieurs fois)
     const c = charterById(CURRENT), p = getPlan(c), i = +b.dataset.i, l = p.legs[i];
-    if (toNum(l.gen_h) === 24) { l.gen_h = 12; try { await savePlan(c, p); } catch (e) { return toast(errMsg(e), 'err'); } }
-    legForm(c, null, { date: l.date, speed: p.speed, gen_h: 12, etd: '17:00', _after: i });
+    const lastOfDay = l.date ? p.legs.reduce((k, x, j) => (!x.alt && x.date === l.date ? j : k), i) : i;
+    legForm(c, null, { date: l.date, speed: p.speed, gen_h: 0, etd: '', _after: lastOfDay, _sameDay: !!l.date });
+  };
+  ACTIONS['leg-option'] = b => { // trajet alternatif pour la même étape (une seule option compte dans les totaux)
+    const c = charterById(CURRENT), p = getPlan(c), i = +b.dataset.i, l = p.legs[i];
+    const group = l.group || l.id;
+    const last = p.legs.reduce((k, x, j) => (x.group === group || x.id === l.id ? j : k), i);
+    legForm(c, null, { date: l.date, speed: l.speed ?? p.speed, gen_h: l.gen_h, etd: l.etd, _after: last, _group: group, _base: l.id });
+  };
+  ACTIONS['leg-choose'] = async b => {
+    const c = charterById(CURRENT), p = getPlan(c), l = p.legs[+b.dataset.i];
+    p.legs.forEach(x => { if (x.group === l.group) x.alt = x.id !== l.id; });
+    try { await savePlan(c, p); route(); toast('Option retenue : totaux recalculés'); } catch (e) { toast(errMsg(e), 'err'); }
   };
   ACTIONS['plan-days'] = async () => {
     const c = charterById(CURRENT), p = getPlan(c), n = dayDiff(c.end_date, c.start_date);
@@ -1931,8 +1973,8 @@
     const head = ['Day', 'Period', 'Trip', 'Position GPS Google', 'Position GPS', 'Distance in NM', 'Distance Cumulée en NM', 'Speed (knots)',
       'Approximate sailing time (hour)', 'Generator (hours)', 'Consumption (liters)', 'Consumption cumulated (liters)', 'ETD (departure hour)', 'ETA (arrival hour)', 'Remarks/Suggestions'];
     const aoa = [[c.yacht || YACHT], [title], [`Engines ${p.eng_lph} L/h · Generator ${p.gen_lph} L/h`], [], head,
-      ...P.rows.map(r => [r.sameDay ? '' : r.day ?? '', r.sameDay ? '' : fdate(r.date), r.trip || '', r.gps_link || '', r.gps || '', r.dist || 0, r.cumD, r.dist ? r.speed : '',
-        r.hours ? hhmm(r.hours) : '', r.genH, r.cons, r.cumL, r.etd || '', r.eta, r.remarks || '']),
+      ...P.rows.map(r => [r.sameDay ? '' : r.day ?? '', r.sameDay ? '' : fdate(r.date), (r.optLetter ? `[Option ${r.optLetter}${r.alt ? '' : ' - retenue'}] ` : '') + (r.trip || ''), r.gps_link || '', r.gps || '', r.dist || 0, r.alt ? '' : r.cumD, r.dist ? r.speed : '',
+        r.hours ? hhmm(r.hours) : '', r.shoreDay ? 'À quai (0)' : r.genH, r.cons, r.alt ? '' : r.cumL, r.etd || '', r.eta, r.remarks || '']),
       [], ['', '', 'TOTAL', '', '', P.totalD, '', '', hhmm(P.totalH), '', P.totalL]];
     const ws = X.utils.aoa_to_sheet(aoa);
     ws['!cols'] = [6, 11, 24, 22, 18, 10, 12, 9, 12, 10, 12, 13, 10, 10, 70].map(w => ({ wch: w }));
