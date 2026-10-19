@@ -464,3 +464,21 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
   .folder-tab small { font-size: .72rem; }
   .folder-tab .ft-sub { display: none; }
 }
+
+/* Itinéraire / programme */
+.plan-params { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; padding: 10px 14px; margin-bottom: 14px;
+  background: #faf7f0; border: 1px solid var(--line); border-radius: 10px; font-size: .9rem; }
+.plan-params input { width: 76px; padding: 5px 8px; margin: 0 4px; }
+.itin-table td, .itin-table th { white-space: nowrap; }
+.itin-table td.itin-trip { white-space: normal; min-width: 240px; max-width: 380px; }
+.itin-rem { font-size: .82rem; color: var(--ink-2); margin-top: 3px; line-height: 1.35; }
+.itin-table tr.same-day td { border-top: 1px dashed var(--line); }
+.itin-table td.actions { white-space: nowrap; }
+.itin-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 14px; }
+.itin-totals > div { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: #fff; display: flex; flex-direction: column; gap: 2px; }
+.itin-totals span { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
+.itin-totals b { font-size: 1.2rem; color: var(--navy); }
+.itin-totals small { color: var(--ink-2); }
+.itin-totals .neg b { color: var(--bad); }
+.leg-preview { background: #faf7f0; border-radius: 8px; padding: 8px 12px; }
+@media (max-width: 760px) { .itin-table td.itin-trip { min-width: 0; max-width: none; flex-direction: column; align-items: flex-end; } .itin-rem { text-align: right; } .plan-params input { width: 64px; } }

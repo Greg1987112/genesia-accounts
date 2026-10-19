@@ -1692,8 +1692,9 @@
       </div>
       ${folderTabs(c, tab)}
       ${missing ? `<div class="banner banner-gold">${ICON.lock}<div>Pour utiliser ce dossier, exécutez une fois le fichier <b>maj-dossiers.sql</b> dans Supabase (SQL Editor), puis rechargez la page.</div></div>` : ''}
+      ${tab === 'itinerary' && !missing ? itineraryPanel(c) : ''}
       <section class="panel">
-        <div class="panel-head"><h2>${esc(label)}</h2>
+        <div class="panel-head"><h2>${tab === 'itinerary' ? 'Documents & notes' : esc(label)}</h2>
           ${missing ? '' : `<div class="row-gap"><button class="btn btn-ghost btn-sm" data-act="doc-note" data-folder="${tab}">${ICON.edit}Ajouter une note</button>
             <label class="btn btn-primary btn-sm file-btn">${ICON.plus}Ajouter des fichiers<input type="file" multiple class="sr-file" data-doc-upload="${tab}"
               accept="application/pdf,image/*,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.heic,.pages,.numbers,.key"></label></div>`}</div>
@@ -1701,6 +1702,7 @@
         ${docs.length ? `<div class="doc-list">${docs.map(item).join('')}</div>`
           : `<div class="empty-state"><p class="muted">Dossier vide. Ajoutez des fichiers (PDF, photos, Word, Excel…) ou une note.</p></div>`}
       </section>`);
+    if (tab === 'itinerary' && !missing) bindItinerary(c);
     const inp = $('[data-doc-upload]');
     if (inp) inp.addEventListener('change', async () => {
       const files = [...inp.files]; if (!files.length) return;
@@ -1734,6 +1736,209 @@
     if (!(await confirmDialog(`Supprimer « ${esc(d.title || d.file_name || 'Note')} » ?`, 'Supprimer'))) return;
     try { await api.remove('charter_documents', d.id); if (d.file_path) api.removeFile(d.file_path).catch(() => {}); await reload(); route(); toast('Supprimé'); }
     catch (e) { toast(errMsg(e), 'err'); }
+  };
+
+  // ---------------- Itinéraire (programme) avec calcul de consommation ----------------
+  // Stocké dans charter_documents (folder 'itinerary_plan', note = JSON) : pas de table supplémentaire.
+  const PLAN_DEFAULTS = { eng_lph: 100, gen_lph: 20, speed: 12 };
+  const planRow = c => (S.charter_documents || []).find(d => d.charter_id === c.id && d.folder === 'itinerary_plan');
+  function getPlan(c) {
+    const row = planRow(c);
+    let p = null; try { p = row?.note ? JSON.parse(row.note) : null; } catch { p = null; }
+    if (!p) { // reprend les réglages du dernier programme
+      const last = (S.charter_documents || []).filter(d => d.folder === 'itinerary_plan' && d.note).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+      let lp = null; try { lp = last ? JSON.parse(last.note) : null; } catch { lp = null; }
+      p = { eng_lph: lp?.eng_lph ?? PLAN_DEFAULTS.eng_lph, gen_lph: lp?.gen_lph ?? PLAN_DEFAULTS.gen_lph, speed: lp?.speed ?? PLAN_DEFAULTS.speed, legs: [] };
+    }
+    p.legs = p.legs || [];
+    return p;
+  }
+  async function savePlan(c, p) {
+    p.legs = p.legs.map((l, i) => ({ ...l, _i: i })).sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || a._i - b._i).map(({ _i, ...l }) => l);
+    const row = planRow(c), note = JSON.stringify(p);
+    if (row) await api.update('charter_documents', row.id, { note });
+    else await api.insert('charter_documents', { charter_id: c.id, folder: 'itinerary_plan', title: 'Programme', note });
+    await reload();
+  }
+  const addDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const dayDiff = (a, b) => Math.round((new Date(a + 'T12:00:00Z') - new Date(b + 'T12:00:00Z')) / 864e5);
+  const hhmm = h => { if (h == null || !isFinite(h)) return ''; const m = Math.round(h * 60); return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`; };
+  const clock = (etd, h) => { if (!etd) return ''; const [H, M] = etd.split(':').map(Number); const t = H * 60 + M + Math.round((h || 0) * 60);
+    const d = Math.floor(t / 1440), r = t % 1440; return `${String(Math.floor(r / 60)).padStart(2, '0')}:${String(r % 60).padStart(2, '0')}${d ? ` (+${d} j)` : ''}`; };
+  function computePlan(c, p) {
+    const first = p.legs.map(l => l.date).filter(Boolean).sort()[0] || c.start_date;
+    let cumD = 0, cumL = 0, cumH = 0, eng = 0, gen = 0, prevDate = null;
+    const rows = p.legs.map((l, i) => {
+      const dist = toNum(l.dist) || 0, speed = toNum(l.speed) || toNum(p.speed) || 0, genH = toNum(l.gen_h) || 0;
+      const hours = dist > 0 && speed > 0 ? dist / speed : 0;
+      const lEng = r2(hours * (toNum(p.eng_lph) || 0)), lGen = r2(genH * (toNum(p.gen_lph) || 0)), cons = r2(lEng + lGen);
+      cumD = r2(cumD + dist); cumL = r2(cumL + cons); cumH += hours; eng += lEng; gen += lGen;
+      const sameDay = l.date && l.date === prevDate; prevDate = l.date;
+      return { ...l, i, day: l.date && first ? dayDiff(l.date, first) + 1 : null, sameDay, dist, speed, genH, hours, cons, cumD, cumL, eta: hours ? clock(l.etd, hours) : '' };
+    });
+    const voy = S.voyages.filter(v => v.charter_id === c.id).sort(byPos)[0];
+    const rob = toNum(voy?.rob_before);
+    return { rows, totalD: cumD, totalH: cumH, totalL: cumL, eng: r2(eng), gen: r2(gen), rob, robEnd: rob != null ? r2(rob - cumL) : null, voy };
+  }
+  function itineraryPanel(c) {
+    const p = getPlan(c), P = computePlan(c, p);
+    const hasGps = p.legs.some(l => l.gps || l.gps_link);
+    const gps = s => !s ? '' : /^https?:\/\//.test(s) ? `<a href="${esc(s)}" target="_blank" rel="noopener">Carte ↗</a>` : esc(s);
+    const rows = P.rows.map(r => `<tr class="row-click ${r.sameDay ? 'same-day' : ''}" data-leg="${r.i}">
+        <td data-label="Day" class="num">${r.sameDay ? '' : (r.day ?? '')}</td>
+        <td data-label="Date">${r.sameDay ? '' : fdate(r.date)}</td>
+        <td data-label="Trip" class="itin-trip"><b>${esc(r.trip || '') || '<span class="muted">— à compléter —</span>'}</b>${r.remarks ? `<div class="itin-rem">${esc(r.remarks)}</div>` : ''}</td>
+        ${hasGps ? `<td data-label="Position GPS">${gps(r.gps_link)}${r.gps_link && r.gps ? ' · ' : ''}${esc(r.gps || '')}</td>` : ''}
+        <td data-label="Distance NM" class="num">${r.dist ? fmt(r.dist) : ''}</td>
+        <td data-label="Cumul NM" class="num">${fmt(r.cumD)}</td>
+        <td data-label="Speed kn" class="num">${r.dist ? fmt(r.speed, r.speed % 1 ? 1 : 0) : ''}</td>
+        <td data-label="Sailing time" class="num">${r.hours ? hhmm(r.hours) : ''}</td>
+        <td data-label="Générateur" class="num">${r.genH ? r.genH + ' h' : ''}</td>
+        <td data-label="Conso (L)" class="num"><b>${fmt(r.cons)}</b></td>
+        <td data-label="Conso cumul (L)" class="num">${fmt(r.cumL)}</td>
+        <td data-label="ETD" class="num">${esc(r.etd || '')}</td>
+        <td data-label="ETA" class="num">${esc(r.eta)}</td>
+        <td class="actions"><button class="icon-btn" data-act="leg-edit" data-i="${r.i}" title="Modifier">${ICON.edit}</button>
+          <button class="icon-btn" data-act="leg-same" data-i="${r.i}" title="Ajouter une étape le même jour">${ICON.plus}</button>
+          <button class="icon-btn danger" data-act="leg-del" data-i="${r.i}" title="Supprimer">${ICON.trash}</button></td></tr>`).join('');
+    return `<section class="panel itin">
+      <div class="panel-head"><h2>Programme & consommation</h2>
+        <div class="row-gap wrap">
+          ${!p.legs.length && c.start_date && c.end_date ? `<button class="btn btn-ghost btn-sm" data-act="plan-days">${ICON.plus}Créer les jours du charter</button>` : ''}
+          <label class="btn btn-ghost btn-sm file-btn">${ICON.sheet}Importer un Excel<input type="file" class="sr-file" data-plan-import accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+          ${p.legs.length ? `<button class="btn btn-ghost btn-sm" data-act="plan-xlsx">${ICON.sheet}Excel</button>` : ''}
+          <button class="btn btn-primary btn-sm" data-act="leg-new">${ICON.plus}Ajouter une étape</button></div></div>
+      <form class="plan-params" id="f-plan">
+        <label>Moteurs <input type="number" step="1" min="0" name="eng_lph" value="${esc(p.eng_lph)}"> L/h de navigation</label>
+        <label>Générateur <input type="number" step="1" min="0" name="gen_lph" value="${esc(p.gen_lph)}"> L/h</label>
+        <label>Vitesse par défaut <input type="number" step="0.5" min="0" name="speed" value="${esc(p.speed)}"> nœuds</label>
+        <span class="muted small">Conso d’une étape = temps de navigation × L/h moteurs + heures générateur × L/h générateur</span>
+      </form>
+      ${p.legs.length ? `<div class="table-wrap"><table class="table table-cards table-compact itin-table">
+        <thead><tr><th>Day</th><th>Date</th><th>Trip / Remarks</th>${hasGps ? '<th>Position GPS</th>' : ''}<th class="num">Distance NM</th><th class="num">Cumul NM</th><th class="num">Speed kn</th>
+          <th class="num">Sailing time</th><th class="num">Géné.</th><th class="num">Conso L</th><th class="num">Cumul L</th><th class="num">ETD</th><th class="num">ETA</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+        <div class="itin-totals">
+          <div><span>Distance totale</span><b>${fmt(P.totalD)} NM</b></div>
+          <div><span>Temps de navigation</span><b>${hhmm(P.totalH)}</b></div>
+          <div><span>Consommation estimée</span><b>${fmt(P.totalL)} L</b><small>moteurs ${fmt(P.eng)} L · générateur ${fmt(P.gen)} L</small></div>
+          ${P.rob != null ? `<div><span>ROB au départ (fuel booklet)</span><b>${fmt(P.rob)} L</b></div>
+            <div class="${P.robEnd < 0 ? 'neg' : ''}"><span>ROB estimé à l’arrivée</span><b>${fmt(P.robEnd)} L</b>${toNum(P.voy?.rob_after) != null ? `<small>réel : ${fmt(P.voy.rob_after)} L (conso réelle ${fmt(r2(P.rob - P.voy.rob_after))} L)</small>` : ''}</div>` : ''}
+        </div>`
+      : `<div class="empty-state"><p class="muted">Aucune étape. ${c.start_date && c.end_date ? 'Créez les jours du charter, ' : ''}ajoutez une étape ou importez votre fichier Excel de programme.</p></div>`}
+    </section>`;
+  }
+  function bindItinerary(c) {
+    const f = $('#f-plan'); if (!f) return;
+    let tm;
+    f.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(async () => {
+      const p = getPlan(c); ['eng_lph', 'gen_lph', 'speed'].forEach(k => { p[k] = toNum(f[k].value) ?? 0; });
+      try { await savePlan(c, p); const a = document.activeElement?.name; route(); if (a) { const el = $(`#f-plan [name=${a}]`); el?.focus(); const v = el?.value; if (el) { el.value = ''; el.value = v; } } }
+      catch (e) { toast(errMsg(e), 'err'); }
+    }, 700); });
+    $$('.itin-table tr[data-leg]').forEach(tr => tr.addEventListener('click', e => { if (e.target.closest('button,a')) return; legForm(c, +tr.dataset.leg); }));
+    const imp = $('[data-plan-import]');
+    if (imp) imp.addEventListener('change', async () => { const file = imp.files[0]; if (file) await importPlanXlsx(c, file); imp.value = ''; });
+  }
+  function legForm(c, i, preset) {
+    const p = getPlan(c), isNew = i == null, l = isNew ? preset : p.legs[i];
+    const m = openModal({ title: isNew ? 'Nouvelle étape' : 'Modifier l’étape', wide: true,
+      body: `<form class="form-grid" id="f-leg">
+        <label class="field"><span>Date</span><input type="date" name="date" value="${esc(l.date || '')}"></label>
+        <label class="field"><span>Trip <small>(ex. Hydra/Agistri)</small></span><input name="trip" value="${esc(l.trip || '')}" required></label>
+        <label class="field"><span>Position GPS Google <small>(lien)</small></span><input name="gps_link" value="${esc(l.gps_link || '')}" placeholder="https://maps.google.com/…"></label>
+        <label class="field"><span>Position GPS</span><input name="gps" value="${esc(l.gps || '')}" placeholder="37°20'N 23°28'E"></label>
+        <label class="field"><span>Distance (NM) <small>(0 = à l’ancre / au port)</small></span><input type="number" step="0.1" min="0" name="dist" value="${esc(l.dist ?? '')}"></label>
+        <label class="field"><span>Vitesse (nœuds)</span><input type="number" step="0.5" min="0" name="speed" value="${esc(l.speed ?? p.speed)}"></label>
+        <label class="field"><span>Heures générateur <small>(12 = ½ journée, 24 = journée)</small></span><input type="number" step="0.5" min="0" name="gen_h" value="${esc(l.gen_h ?? 24)}"></label>
+        <label class="field"><span>ETD (heure de départ)</span><input type="time" name="etd" value="${esc(l.etd || '')}"></label>
+        <label class="field span-2"><span>Remarks / Suggestions</span><textarea name="remarks" rows="3">${esc(l.remarks || '')}</textarea></label>
+        <div class="span-2 leg-preview muted small" id="leg-prev"></div></form>`,
+      footer: `${!isNew ? `<button class="btn btn-ghost danger mr-auto" data-del>${ICON.trash}Supprimer</button>` : ''}<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>` });
+    const f = $('#f-leg', m);
+    const prev = () => { const d = toNum(f.dist.value) || 0, s = toNum(f.speed.value) || 0, g = toNum(f.gen_h.value) || 0, h = d && s ? d / s : 0;
+      $('#leg-prev', m).innerHTML = `Temps de navigation <b>${h ? hhmm(h) : '—'}</b> · ETA <b>${h && f.etd.value ? clock(f.etd.value, h) : '—'}</b> · Consommation estimée <b>${fmt(r2(h * (toNum(p.eng_lph) || 0) + g * (toNum(p.gen_lph) || 0)))} L</b>`; };
+    f.addEventListener('input', prev); prev();
+    $('[data-ok]', m).onclick = async ev => {
+      if (!f.reportValidity()) return; busy(ev.currentTarget, true);
+      const leg = { date: f.date.value || null, trip: f.trip.value.trim(), gps_link: f.gps_link.value.trim() || null, gps: f.gps.value.trim() || null,
+        dist: toNum(f.dist.value) ?? 0, speed: toNum(f.speed.value), gen_h: toNum(f.gen_h.value) ?? 0, etd: f.etd.value || null, remarks: f.remarks.value.trim() || null };
+      const q = getPlan(c);
+      if (isNew) { if (preset?._after != null) q.legs.splice(preset._after + 1, 0, leg); else q.legs.push(leg); } else q.legs[i] = leg;
+      try { await savePlan(c, q); closeModal(); route(); } catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
+    };
+    const del = $('[data-del]', m); if (del) del.onclick = () => { closeModal(); delLeg(c, i); };
+  }
+  async function delLeg(c, i) {
+    const p = getPlan(c); if (!(await confirmDialog(`Supprimer l’étape « ${esc(p.legs[i]?.trip || '')} » ?`, 'Supprimer'))) return;
+    p.legs.splice(i, 1); try { await savePlan(c, p); route(); } catch (e) { toast(errMsg(e), 'err'); }
+  }
+  ACTIONS['leg-new'] = () => { const c = charterById(CURRENT), p = getPlan(c), last = p.legs[p.legs.length - 1];
+    legForm(c, null, { date: last?.date ? addDays(last.date, 1) : (c.start_date || today()), speed: p.speed, gen_h: 24, etd: '08:00' }); };
+  ACTIONS['leg-edit'] = b => legForm(charterById(CURRENT), +b.dataset.i);
+  ACTIONS['leg-del'] = b => delLeg(charterById(CURRENT), +b.dataset.i);
+  ACTIONS['leg-same'] = async b => { // étape supplémentaire le même jour : générateur partagé (12 h + 12 h)
+    const c = charterById(CURRENT), p = getPlan(c), i = +b.dataset.i, l = p.legs[i];
+    if (toNum(l.gen_h) === 24) { l.gen_h = 12; try { await savePlan(c, p); } catch (e) { return toast(errMsg(e), 'err'); } }
+    legForm(c, null, { date: l.date, speed: p.speed, gen_h: 12, etd: '17:00', _after: i });
+  };
+  ACTIONS['plan-days'] = async () => {
+    const c = charterById(CURRENT), p = getPlan(c), n = dayDiff(c.end_date, c.start_date);
+    for (let k = 0; k <= n; k++) p.legs.push({ date: addDays(c.start_date, k), trip: '', dist: 0, speed: p.speed, gen_h: k === 0 || k === n ? 12 : 24, etd: '08:00' });
+    try { await savePlan(c, p); route(); toast(`${n + 1} jours créés : cliquez sur une ligne pour la compléter`); } catch (e) { toast(errMsg(e), 'err'); }
+  };
+  async function importPlanXlsx(c, file) {
+    try { await loadScript(XLSX_JS); } catch (e) { return toast(errMsg(e), 'err'); }
+    try {
+      const X = window.XLSX, wb = X.read(await file.arrayBuffer(), { cellDates: false, cellFormula: true });
+      const ws = wb.Sheets[wb.SheetNames[0]], rg = X.utils.decode_range(ws['!ref']);
+      const cell = (r, col) => ws[X.utils.encode_cell({ r, c: col })];
+      let hr = -1, col = {};
+      for (let r = rg.s.r; r <= rg.e.r && hr < 0; r++) for (let k = rg.s.c; k <= rg.e.c; k++) if (/^day$/i.test(String(cell(r, k)?.v || '').trim())) { hr = r; break; }
+      if (hr < 0) throw new Error('En-tête « Day » introuvable dans le fichier.');
+      for (let k = rg.s.c; k <= rg.e.c; k++) { const h = String(cell(hr, k)?.v || '').toLowerCase();
+        if (/^day/.test(h)) col.day = k; else if (/period|date/.test(h)) col.date = k; else if (/^trip/.test(h)) col.trip = k;
+        else if (/gps google/.test(h)) col.gps_link = k; else if (/gps/.test(h)) col.gps = k; else if (/distance cumul/.test(h)) col.cum = k;
+        else if (/distance/.test(h)) col.dist = k; else if (/speed/.test(h)) col.speed = k; else if (/consumption cumul/.test(h)) col.cumc = k;
+        else if (/consumption/.test(h)) col.cons = k; else if (/etd|departure/.test(h)) col.etd = k; else if (/remark/.test(h)) col.rem = k; }
+      const p = getPlan(c), legs = []; let lastDate = null;
+      const toDate = v => {
+        if (typeof v === 'number' && v > 20000) return new Date(Date.UTC(1899, 11, 30) + Math.floor(v) * 864e5).toISOString().slice(0, 10);
+        const s = String(v ?? '').match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+        return s ? `${s[3].length === 2 ? '20' + s[3] : s[3]}-${s[2].padStart(2, '0')}-${s[1].padStart(2, '0')}` : null; };
+      const toTime = v => { if (v instanceof Date) return `${String(v.getHours()).padStart(2, '0')}:${String(v.getMinutes()).padStart(2, '0')}`;
+        if (typeof v === 'number') { const m = Math.round((v % 1) * 1440); return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`; }
+        const s = String(v || '').match(/(\d{1,2})[:h](\d{2})/); return s ? `${s[1].padStart(2, '0')}:${s[2]}` : null; };
+      for (let r = hr + 1; r <= rg.e.r; r++) {
+        const trip = String(cell(r, col.trip)?.v ?? '').trim(); if (!trip) continue;
+        const d = toDate(cell(r, col.date)?.v); if (d) lastDate = d;
+        const f = String(cell(r, col.cons)?.f || '');
+        const mg = f.match(/\(\s*(\d+(?:\.\d+)?)\s*\*\s*(\d+(?:\.\d+)?)\s*\)\s*$/), me = f.match(/\(\s*(\d+(?:\.\d+)?)\s*\*/);
+        if (me) p.eng_lph = +me[1]; if (mg) p.gen_lph = +mg[2];
+        legs.push({ date: d || lastDate, trip, gps_link: cell(r, col.gps_link)?.v ? String(cell(r, col.gps_link).v) : null, gps: cell(r, col.gps)?.v ? String(cell(r, col.gps).v) : null,
+          dist: toNum(cell(r, col.dist)?.v) || 0, speed: toNum(cell(r, col.speed)?.v) ?? p.speed, gen_h: mg ? +mg[1] : 24,
+          etd: toTime(cell(r, col.etd)?.v), remarks: cell(r, col.rem)?.v ? String(cell(r, col.rem).v).trim() : null });
+      }
+      if (!legs.length) throw new Error('Aucune étape trouvée sous l’en-tête.');
+      if (p.legs.length && !(await confirmDialog(`Remplacer les ${p.legs.length} étapes actuelles par les ${legs.length} étapes du fichier ?`, 'Remplacer', false))) return;
+      p.legs = legs; await savePlan(c, p); route(); toast(`${legs.length} étapes importées`);
+    } catch (e) { toast('Import : ' + errMsg(e), 'err'); }
+  }
+  ACTIONS['plan-xlsx'] = async () => {
+    try { await loadScript(XLSX_JS); } catch (e) { return toast(errMsg(e), 'err'); }
+    const c = charterById(CURRENT), p = getPlan(c), P = computePlan(c, p), X = window.XLSX;
+    const title = `${c.title}${c.start_date ? ` from ${fdate(c.start_date)} to ${fdate(c.end_date)}` : ''}`;
+    const head = ['Day', 'Period', 'Trip', 'Position GPS Google', 'Position GPS', 'Distance in NM', 'Distance Cumulée en NM', 'Speed (knots)',
+      'Approximate sailing time (hour)', 'Generator (hours)', 'Consumption (liters)', 'Consumption cumulated (liters)', 'ETD (departure hour)', 'ETA (arrival hour)', 'Remarks/Suggestions'];
+    const aoa = [[c.yacht || YACHT], [title], [`Engines ${p.eng_lph} L/h · Generator ${p.gen_lph} L/h`], [], head,
+      ...P.rows.map(r => [r.sameDay ? '' : r.day ?? '', r.sameDay ? '' : fdate(r.date), r.trip || '', r.gps_link || '', r.gps || '', r.dist || 0, r.cumD, r.dist ? r.speed : '',
+        r.hours ? hhmm(r.hours) : '', r.genH, r.cons, r.cumL, r.etd || '', r.eta, r.remarks || '']),
+      [], ['', '', 'TOTAL', '', '', P.totalD, '', '', hhmm(P.totalH), '', P.totalL]];
+    const ws = X.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [6, 11, 24, 22, 18, 10, 12, 9, 12, 10, 12, 13, 10, 10, 70].map(w => ({ wch: w }));
+    const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Programme');
+    saveBlob(new Blob([X.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+      `Programme_${c.title.replace(/[^\w-]+/g, '_')}.xlsx`);
   };
 
   // Ligne de dépense automatique « Bank fee » = APA reçu × % (suit l'APA et le taux du charter)
