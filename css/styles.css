@@ -493,3 +493,27 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .opt-diff { font-size: .8rem; margin-top: 3px; }
 .btn-xs { padding: 3px 8px; font-size: .75rem; border-radius: 7px; min-height: 0; }
 .shore-badge { display: inline-block; font-size: .72rem; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: #e3f0fb; color: #1d5f99; white-space: nowrap; }
+
+/* Carte de l'itinéraire */
+.route-map { height: 460px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #0b2238; margin-bottom: 12px; }
+@media (max-width: 760px) { .route-map { height: 340px; } }
+.stop-pin span { display: block; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid var(--gold); box-shadow: 0 0 0 2px rgba(0,0,0,.35); opacity: .55; }
+.stop-pin.on span { opacity: 1; background: var(--gold); border-color: #fff; }
+.boat-pin span { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: var(--navy); color: #fff;
+  font-size: 18px; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.45); }
+.route-days { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 8px; align-items: stretch; }
+.day-chip { flex: none; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: #fff; color: var(--ink); font: inherit; font-size: .8rem; cursor: pointer; line-height: 1.2; }
+.day-chip small { color: var(--ink-2); font-size: .7rem; }
+.day-chip.on { background: var(--navy); border-color: var(--navy); color: #fff; }
+.day-chip.on small { color: #d9e2ec; }
+.day-chip.today { box-shadow: inset 0 -3px 0 var(--gold); }
+.route-days [data-route-play] { flex: none; margin-left: auto; white-space: nowrap; }
+.route-info { background: #faf7f0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; }
+.ri-head { color: var(--navy); }
+.ri-leg { border-top: 1px dashed var(--line); padding-top: 6px; }
+.ri-now { font-weight: 700; color: #1d5f99; }
+[data-place-node].on { background: var(--gold); color: #fff; border-radius: 4px; padding: 0 4px; }
+.itin-table tr.is-today td { background: #fff8e8; }
+.client-tabs { max-width: 480px; }
+.via-pin span { display: block; width: 10px; height: 10px; background: #fff; border: 2px solid var(--navy); transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.3); }

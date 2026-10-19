@@ -103,6 +103,9 @@
       htChip: 'HT', apaLeft: 'Solde APA',
       boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
+      tabAccounts: 'Comptes', tabItinerary: 'Itinéraire', programme: 'Programme', trip: 'Trajet', dayShort: 'Jour', allDays: 'Tout', playRoute: '▶ Voir le parcours',
+      sailingTime: 'de navigation', mapPlan: 'Plan', routeNote: 'Routes indicatives selon le programme prévu (peuvent évoluer selon la météo et les conditions de mer).',
+      nowSailing: 'Aujourd’hui : en navigation (position prévue)', nowBefore: 'Aujourd’hui : avant le départ du jour', nowArrived: 'Aujourd’hui : arrivé à l’escale du jour',
     },
     en: {
       apaReceived: 'APA received', totalExpenses: 'Total expenses', apaBalance: 'APA balance',
@@ -138,6 +141,9 @@
       htChip: 'excl. VAT', apaLeft: 'APA left',
       boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
+      tabAccounts: 'Accounts', tabItinerary: 'Itinerary', programme: 'Programme', trip: 'Trip', dayShort: 'Day', allDays: 'All', playRoute: '▶ Play the route',
+      sailingTime: 'sailing', mapPlan: 'Map', routeNote: 'Indicative routes as per the planned programme (subject to weather and sea conditions).',
+      nowSailing: 'Today: under way (planned position)', nowBefore: 'Today: before the day’s departure', nowArrived: 'Today: arrived at the day’s stop',
     },
   };
   const t = k => (I18N[LANG] && I18N[LANG][k]) || I18N.fr[k] || k;
@@ -301,6 +307,10 @@
       const { data, error } = await this.sb.rpc('client_view', { p_token: token });
       if (error) throw error; return data;
     }
+    async clientItinerary(token) {
+      const { data, error } = await this.sb.rpc('client_itinerary', { p_token: token });
+      if (error) return null; return data;
+    }
     async reportView(token) {
       const { data, error } = await this.sb.rpc('report_view', { p_token: token });
       if (error) throw error; return data;
@@ -395,6 +405,12 @@
       const { client_token, notes, signed_snapshot, report_token, report_to, report_cc, ...pub } = c; // eslint-disable-line no-unused-vars
       return { ...B, charter: pub, invoices: B.invoices.map(({ fingerprint, ...i }) => i) }; // eslint-disable-line no-unused-vars
     }
+    async clientItinerary(token) {
+      const c = this.S.charters.find(x => x.client_token === token); if (!c) return null;
+      const d = (this.S.charter_documents || []).find(x => x.charter_id === c.id && x.folder === 'itinerary_plan');
+      let p = null; try { p = d?.note ? JSON.parse(d.note) : null; } catch { p = null; }
+      return p && p.share_client ? p : null;
+    }
     async reportView(token) {
       const c = this.S.charters.find(x => x.report_token === token && x.status === 'signed');
       return c ? this.clientView(c.client_token) : null;
@@ -430,6 +446,7 @@
   const ICON = {
     file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
     fork: svg('<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5"/>'),
+    map: svg('<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>'),
     folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
     edit: svg('<path d="M4 20h4L19 9l-4-4L4 16z"/>'),
@@ -1119,12 +1136,18 @@
     LANG = store.get('ca-lang') || ((navigator.language || 'en').toLowerCase().startsWith('fr') ? 'fr' : 'en');
     document.documentElement.lang = LANG;
     let B = null, lastAt = null, inflight = false, prevStatus = null;
+    let PLAN = null, planStr = '', CTAB = store.get('ca-tab-' + token) || 'accounts';
 
     async function refresh() {
       if (inflight) return; inflight = true;
       try {
+        const prevB = B ? JSON.stringify(B) : '';
         B = REPORT ? await api.reportView(token) : await api.clientView(token); lastAt = new Date();
-        if (!$('#modal-root').innerHTML) render();
+        let newPlan = null; if (!REPORT && api.clientItinerary) { try { newPlan = await api.clientItinerary(token); } catch { newPlan = null; } }
+        const np = newPlan ? JSON.stringify(newPlan) : '', planChanged = np !== planStr;
+        PLAN = newPlan && (newPlan.legs || []).length ? newPlan : null; planStr = np;
+        const onMap = CTAB === 'itin' && PLAN && $('#client-map');
+        if (!$('#modal-root').innerHTML && !(onMap && !planChanged && prevB === JSON.stringify(B))) render();
         if (!REPORT) maybeAnnounceClosed();
       } catch (e) { if (!B) renderError(errMsg(e)); }
       finally { inflight = false; }
@@ -1158,6 +1181,26 @@
         <div class="brand-mark">${ICON.anchor}</div><h2>${t('invalidLink')}</h2><p class="muted">${esc(msg || t('invalidLinkHelp'))}</p></div></div>`;
     }
 
+    const TX = () => ({ day: t('dayShort'), all: t('allDays'), play: t('playRoute'), sailing: t('sailingTime'), satellite: 'Satellite', plan: t('mapPlan'),
+      nowSailing: t('nowSailing'), nowBefore: t('nowBefore'), nowArrived: t('nowArrived') });
+    function clientItinHtml(c) {
+      const P = computePlan(c, PLAN);
+      return `<section class="panel route-panel"><div class="panel-head"><h2>${t('tabItinerary')}</h2>
+          <span class="muted small">${fmt(P.totalD)} NM · ${hhmm(P.totalH)} ${t('sailingTime')}</span></div>
+        <div class="route-map" id="client-map"></div><div id="client-route-ctl">${routeDaysHtml(P, TX())}</div>
+        <p class="muted small">${t('routeNote')}</p></section>
+        <section class="panel"><div class="panel-head"><h2>${t('programme')}</h2></div>
+        <div class="table-wrap"><table class="table table-cards table-compact itin-table"><thead><tr><th>${t('dayShort')}</th><th>Date</th><th>${t('trip')}</th><th class="num">NM</th><th class="num">ETD</th><th class="num">ETA</th></tr></thead>
+        <tbody>${P.rows.filter(r => !r.alt).map(r => `<tr class="${r.sameDay ? 'same-day' : ''} ${r.date === today() ? 'is-today' : ''}"><td data-label="${t('dayShort')}" class="num">${r.sameDay ? '' : r.day ?? ''}</td><td data-label="Date">${r.sameDay ? '' : fdate(r.date)}</td>
+          <td data-label="${t('trip')}" class="itin-trip"><b>${esc(r.trip || '')}</b>${r.remarks ? `<div class="itin-rem">${esc(r.remarks)}</div>` : ''}</td>
+          <td data-label="NM" class="num">${r.dist ? fmt(r.dist) : ''}</td><td data-label="ETD" class="num">${r.dist ? esc(r.etd || '') : ''}</td><td data-label="ETA" class="num">${esc(r.eta || '')}</td></tr>`).join('')}</tbody></table></div></section>`;
+    }
+    async function mountClientMap(c) {
+      const el = $('#client-map'); if (!el) return;
+      try { const ctl = await mountRouteMap(el, c, PLAN, { labels: TX() }); bindRouteControls($('.route-panel'), ctl, ctl.P, TX(), false); }
+      catch (e) { el.innerHTML = `<div class="muted center small" style="padding:30px">${esc(errMsg(e))}</div>`; }
+    }
+
     function render() {
       if (!B) return renderError(REPORT ? t('reportUnavailable') : t('invalidLinkHelp'));
       const c = B.charter, st = computeStatement(B), signed = c.status === 'signed', closed = c.status === 'closed';
@@ -1184,6 +1227,10 @@
             ${closed ? `<button class="btn btn-gold" data-act="sign">${ICON.pen}${t('signCta')}</button>` : ''}
           </div>
         </section>
+        ${PLAN ? `<nav class="folder-tabs client-tabs no-print">
+          <a href="#" data-ctab="accounts" class="folder-tab ${CTAB !== 'itin' ? 'on' : ''}">${ICON.sheet}<span><b>${t('tabAccounts')}</b></span></a>
+          <a href="#" data-ctab="itin" class="folder-tab ${CTAB === 'itin' ? 'on' : ''}">${ICON.map}<span><b>${t('tabItinerary')}</b></span></a></nav>` : ''}
+        ${PLAN && CTAB === 'itin' ? clientItinHtml(c) : `
         ${signed ? `<div class="banner banner-ok">${ICON.check}<div><strong>${t('signedBanner')}</strong><br>
           <span>${t('signedOn')} ${fdatetime(c.client_signed_at)} ${t('by')} ${esc(c.client_signed_name)}</span></div></div>`
         : closed ? `<div class="banner banner-gold">${ICON.lock}<div><strong>${t('closedBanner')}</strong></div>
@@ -1206,9 +1253,10 @@
             ${renderSignatureBox(t('master'), c.master_signature, c.master_signed_name, c.master_signed_at)}
           </div>
           ${closed ? `<div class="center no-print"><button class="btn btn-gold btn-lg" data-act="sign">${ICON.pen}${t('signCta')}</button></div>` : ''}
-        </section>
+        </section>`}
         <footer class="foot muted small">${esc(c.yacht || YACHT)} · ${t('statement')} · ${new Date().toLocaleDateString(locale())}</footer>
       </main>`;
+      if (PLAN && CTAB === 'itin') mountClientMap(c);
     }
 
     // Signature en 2 étapes : 1) tips  2) signature
@@ -1301,6 +1349,8 @@
     }
 
     $('#app').addEventListener('click', e => {
+      const tb = e.target.closest('[data-ctab]');
+      if (tb) { e.preventDefault(); CTAB = tb.dataset.ctab; store.set('ca-tab-' + token, CTAB); render(); window.scrollTo(0, 0); return; }
       const b = e.target.closest('[data-act],[data-lang]'); if (!b) return;
       if (b.dataset.lang) { LANG = b.dataset.lang; store.set('ca-lang', LANG); document.documentElement.lang = LANG; render(); return; }
       if (b.dataset.act === 'print') window.print();
@@ -1693,7 +1743,7 @@
       </div>
       ${folderTabs(c, tab)}
       ${missing ? `<div class="banner banner-gold">${ICON.lock}<div>Pour utiliser ce dossier, exécutez une fois le fichier <b>maj-dossiers.sql</b> dans Supabase (SQL Editor), puis rechargez la page.</div></div>` : ''}
-      ${tab === 'itinerary' && !missing ? itineraryPanel(c) : ''}
+      ${tab === 'itinerary' && !missing ? itineraryPanel(c) + (getPlan(c).legs.length ? mapPanelHtml(c, getPlan(c)) : '') : ''}
       <section class="panel">
         <div class="panel-head"><h2>${tab === 'itinerary' ? 'Documents & notes' : esc(label)}</h2>
           ${missing ? '' : `<div class="row-gap"><button class="btn btn-ghost btn-sm" data-act="doc-note" data-folder="${tab}">${ICON.edit}Ajouter une note</button>
@@ -1703,7 +1753,7 @@
         ${docs.length ? `<div class="doc-list">${docs.map(item).join('')}</div>`
           : `<div class="empty-state"><p class="muted">Dossier vide. Ajoutez des fichiers (PDF, photos, Word, Excel…) ou une note.</p></div>`}
       </section>`);
-    if (tab === 'itinerary' && !missing) bindItinerary(c);
+    if (tab === 'itinerary' && !missing) { bindItinerary(c); bindMapPanel(c); }
     const inp = $('[data-doc-upload]');
     if (inp) inp.addEventListener('change', async () => {
       const files = [...inp.files]; if (!files.length) return;
@@ -1788,7 +1838,7 @@
         eta: hours ? clock(l.etd, hours) : '' };
     });
     rows.forEach(r => { if (r.alt && r.group) { const ch = rows.find(x => x.group === r.group && !x.alt); r.diff = ch ? r2(r.cons - ch.cons) : null; r.diffD = ch ? r2(r.dist - ch.dist) : null; } });
-    const voy = S.voyages.filter(v => v.charter_id === c.id).sort(byPos)[0];
+    const voy = ((S && S.voyages) || []).filter(v => v.charter_id === c.id).sort(byPos)[0];
     const rob = toNum(voy?.rob_before);
     return { rows, totalD: cumD, totalH: cumH, totalL: cumL, eng: r2(eng), gen: r2(gen), rob, robEnd: rob != null ? r2(rob - cumL) : null, voy };
   }
@@ -1981,6 +2031,389 @@
     const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Programme');
     saveBlob(new Blob([X.write(wb, { type: 'array', bookType: 'xlsx' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
       `Programme_${c.title.replace(/[^\w-]+/g, '_')}.xlsx`);
+  };
+
+  // ---------------- Routes maritimes (évite la terre) ----------------
+  // Trait de côte Natural Earth 1:10m (world-atlas) rastérisé sur un canvas, puis recherche A* sur la grille d'eau.
+  const LAND_JSON = 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-10m.json';
+  const TOPOJSON_JS = 'https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js';
+  let LAND = null;
+  async function loadLand() {
+    if (LAND) return LAND;
+    await loadScript(TOPOJSON_JS);
+    const topo = await (await fetch(LAND_JSON)).json();
+    const geo = window.topojson.feature(topo, topo.objects.land);
+    const polys = [];
+    (geo.features || [geo]).forEach(f => { const g = f.geometry || f; const list = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+      list.forEach(rings => { let a = 180, b = 90, c = -180, d = -90; rings[0].forEach(([x, y]) => { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; }); polys.push({ rings, bb: [a, b, c, d] }); }); });
+    return (LAND = polys);
+  }
+  const nmBetween = (a, b) => { const R = 3440.065, t = Math.PI / 180, dLa = (b.lat - a.lat) * t, dLo = (b.lng - a.lng) * t;
+    const h = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * t) * Math.cos(b.lat * t) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
+  const pathNm = pts => pts.reduce((s, p, i) => i ? s + nmBetween(pts[i - 1], p) : 0, 0);
+  function seaRoute(a, b, land, padF = 0.6) {
+    const span = Math.max(Math.abs(a.lat - b.lat), Math.abs(a.lng - b.lng));
+    const pad = Math.max(0.25, span * padF);
+    const minLat = Math.min(a.lat, b.lat) - pad, maxLat = Math.max(a.lat, b.lat) + pad;
+    const kx = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const minLng = Math.min(a.lng, b.lng) - pad / kx, maxLng = Math.max(a.lng, b.lng) + pad / kx;
+    const cell = Math.max(0.004, (maxLat - minLat) / 420); // ≈ 450 m mini
+    const H = Math.ceil((maxLat - minLat) / cell), W = Math.ceil((maxLng - minLng) * kx / cell);
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    const g = cv.getContext('2d'); g.fillStyle = '#000';
+    const X = lng => (lng - minLng) * kx / cell, Y = lat => (maxLat - lat) / cell;
+    g.beginPath();
+    land.forEach(p => { if (p.bb[2] < minLng || p.bb[0] > maxLng || p.bb[3] < minLat || p.bb[1] > maxLat) return;
+      p.rings.forEach(r => { r.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.closePath(); }); });
+    g.fill('evenodd');
+    const px = g.getImageData(0, 0, W, H).data, N = W * H, isLand = new Uint8Array(N);
+    for (let i = 0; i < N; i++) isLand[i] = px[i * 4 + 3] > 40 ? 1 : 0;
+    const idx = (x, y) => y * W + x;
+    const snap = (pt) => { // case d'eau la plus proche (ports et marinas sont souvent « dans » le trait de côte)
+      const x0 = Math.max(0, Math.min(W - 1, Math.round(X(pt.lng)))), y0 = Math.max(0, Math.min(H - 1, Math.round(Y(pt.lat))));
+      if (!isLand[idx(x0, y0)]) return [x0, y0];
+      for (let r = 1; r < 60; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; const x = x0 + dx, y = y0 + dy;
+        if (x >= 0 && y >= 0 && x < W && y < H && !isLand[idx(x, y)]) return [x, y]; }
+      return null; };
+    const s = snap(a), e = snap(b); if (!s || !e) return null;
+    const S0 = idx(s[0], s[1]), E0 = idx(e[0], e[1]);
+    const gS = new Float32Array(N).fill(Infinity), came = new Int32Array(N).fill(-1), closed = new Uint8Array(N);
+    // tas binaire
+    const heap = [], hv = [];
+    const push = (i, f) => { heap.push(i); hv.push(f); let k = heap.length - 1; while (k) { const q = (k - 1) >> 1; if (hv[q] <= hv[k]) break; [heap[q], heap[k]] = [heap[k], heap[q]]; [hv[q], hv[k]] = [hv[k], hv[q]]; k = q; } };
+    const pop = () => { const top = heap[0], li = heap.pop(), lv = hv.pop(); if (heap.length) { heap[0] = li; hv[0] = lv; let k = 0;
+      for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && hv[l] < hv[m]) m = l; if (r < heap.length && hv[r] < hv[m]) m = r; if (m === k) break;
+        [heap[m], heap[k]] = [heap[k], heap[m]]; [hv[m], hv[k]] = [hv[k], hv[m]]; k = m; } } return top; };
+    const hx = i => { const x = i % W, y = (i / W) | 0, dx = Math.abs(x - e[0]), dy = Math.abs(y - e[1]); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
+    gS[S0] = 0; push(S0, hx(S0));
+    const D = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.4142], [1, -1, 1.4142], [-1, 1, 1.4142], [-1, -1, 1.4142]];
+    let found = false, guard = 0;
+    while (heap.length && guard++ < 2e6) {
+      const cur = pop(); if (cur === E0) { found = true; break; } if (closed[cur]) continue; closed[cur] = 1;
+      const x = cur % W, y = (cur / W) | 0;
+      for (const [dx, dy, c] of D) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const n = idx(nx, ny); if (isLand[n] || closed[n]) continue;
+        if (dx && dy && (isLand[idx(x + dx, y)] || isLand[idx(x, y + dy)])) continue; // pas de coupe en diagonale
+        const ng = gS[cur] + c; if (ng < gS[n]) { gS[n] = ng; came[n] = cur; push(n, ng + hx(n)); } }
+    }
+    if (!found) return null;
+    const cells = []; for (let k = E0; k !== -1; k = came[k]) cells.push(k); cells.reverse();
+    // lissage : on garde le point visible le plus loin (ligne de vue sans terre)
+    const clear = (i, j) => { let x0 = i % W, y0 = (i / W) | 0; const x1 = j % W, y1 = (j / W) | 0, dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
+      for (;;) { if (isLand[idx(x0, y0)]) return false; if (x0 === x1 && y0 === y1) return true; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } } };
+    const keep = [cells[0]]; let k = 0;
+    while (k < cells.length - 1) { let j = cells.length - 1; while (j > k + 1 && !clear(cells[k], cells[j])) j--; keep.push(cells[j]); k = j; }
+    const toLL = i => ({ lat: r4(maxLat - (((i / W) | 0) + 0.5) * cell), lng: r4(minLng + ((i % W) + 0.5) * cell / kx) });
+    return [a, ...keep.slice(1, -1).map(toLL), b];
+  }
+  const r4 = v => Math.round(v * 1e4) / 1e4;
+  // Route d'un trajet : départ → points de passage → arrivée ; segments vers une escale = route maritime auto,
+  // segment court entre 2 points de passage (canal, chenal) = ligne droite.
+  function legRoutePoints(a, b, via, land) {
+    const pts = [a, ...(via || []).map(([lat, lng]) => ({ lat, lng })), b], out = [a];
+    for (let k = 1; k < pts.length; k++) {
+      const p = pts[k - 1], q = pts[k], straight = nmBetween(p, q), bothVia = k > 1 && k < pts.length - 1;
+      let seg = null;
+      if (land && !(bothVia && straight < 12)) { seg = seaRoute(p, q, land); if (!seg) seg = seaRoute(p, q, land, 1.5);
+        if (seg && pathNm(seg) > Math.max(4 * straight, straight + 40)) seg = null; }
+      out.push(...(seg ? seg.slice(1) : [q]));
+    }
+    return out;
+  }
+
+  // ---------------- Carte de l'itinéraire (Leaflet + vue satellite) ----------------
+  const LEAFLET_JS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js';
+  const LEAFLET_CSS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+  async function ensureLeaflet() {
+    if (!$(`link[href="${LEAFLET_CSS}"]`)) { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = LEAFLET_CSS; document.head.appendChild(l); }
+    await loadScript(LEAFLET_JS);
+    return window.L;
+  }
+  // « 40.55, 14.24 » · « 37°20'N 23°28'E » · « 37°20.5'N » · lien Google Maps (@lat,lng / q=lat,lng / !3dlat!4dlng)
+  function parseGps(s) {
+    if (!s) return null; s = String(s).trim();
+    let m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/) || s.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/) || s.match(/[?&](?:q|query|ll)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/);
+    if (m) return { lat: +m[1], lng: +m[2] };
+    const dms = [...s.matchAll(/(\d+(?:[.,]\d+)?)\s*°\s*(?:(\d+(?:[.,]\d+)?)\s*['’′]\s*)?(?:(\d+(?:[.,]\d+)?)\s*["”″]\s*)?([NSEW])/gi)];
+    if (dms.length >= 2) {
+      const v = d => { const n = x => x ? +String(x).replace(',', '.') : 0; let x = n(d[1]) + n(d[2]) / 60 + n(d[3]) / 3600; return /[SW]/i.test(d[4]) ? -x : x; };
+      const la = dms.find(d => /[NS]/i.test(d[4])), lo = dms.find(d => /[EW]/i.test(d[4]));
+      if (la && lo) return { lat: v(la), lng: v(lo) };
+    }
+    m = s.match(/^(-?\d{1,2}(?:\.\d+)?)\s*[,; ]\s*(-?\d{1,3}(?:\.\d+)?)$/);
+    if (m && Math.abs(+m[1]) <= 90 && Math.abs(+m[2]) <= 180) return { lat: +m[1], lng: +m[2] };
+    return null;
+  }
+  const tripParts = trip => String(trip || '').split('/').map(x => x.trim()).filter(Boolean);
+  const normName = s => String(s || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/[^a-z0-9à-ÿ]+/g, ' ').trim();
+  // Escales dans l'ordre : départ du 1er trajet puis destination de chaque trajet (une escale = un point)
+  function planNodes(c, p) {
+    const P = computePlan(c, p), nodes = [];
+    P.rows.filter(r => !r.alt).forEach(r => {
+      const parts = tripParts(r.trip), leg = p.legs[r.i];
+      if (!nodes.length && parts.length > 1) {
+        const g = leg.from_lat != null ? { lat: leg.from_lat, lng: leg.from_lng } : null;
+        nodes.push({ name: parts[0], lat: g?.lat, lng: g?.lng, legIndex: r.i, kind: 'from', day: r.day, date: r.date, row: null });
+      }
+      const name = parts[parts.length - 1] || r.trip || '';
+      const prev = nodes[nodes.length - 1];
+      let g = leg.to_lat != null ? { lat: leg.to_lat, lng: leg.to_lng } : parseGps(leg.gps_link) || parseGps(leg.gps);
+      if (!g && prev && prev.lat != null && (r.dist === 0 || normName(prev.name) === normName(name))) g = { lat: prev.lat, lng: prev.lng, inherited: true };
+      nodes.push({ name, lat: g?.lat, lng: g?.lng, inherited: !!g?.inherited, legIndex: r.i, kind: 'to', day: r.day, date: r.date, row: r });
+    });
+    return { nodes, P };
+  }
+  async function geocodeName(name, near) {
+    const tries = [];
+    const inPar = (name.match(/\(([^)]+)\)/) || [])[1]; if (inPar) tries.push(inPar);
+    tries.push(name.replace(/\(.*?\)/g, '').trim());
+    for (const q of [...new Set(tries)].filter(Boolean)) {
+      const vb = near ? `&viewbox=${near.lng - 3},${near.lat + 3},${near.lng + 3},${near.lat - 3}` : '';
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=en${vb}&q=${encodeURIComponent(q)}`);
+      if (r.ok) { const j = await r.json(); if (j[0]) return { lat: +j[0].lat, lng: +j[0].lon }; }
+      await new Promise(res => setTimeout(res, 1100)); // 1 requête / seconde (règle Nominatim)
+    }
+    return null;
+  }
+  const lerp = (a, b, t) => ({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
+  const alongPath = (pts, f) => { const tot = pathNm(pts); let d = Math.max(0, Math.min(1, f)) * tot;
+    for (let k = 1; k < pts.length; k++) { const s = nmBetween(pts[k - 1], pts[k]); if (d <= s) return lerp(pts[k - 1], pts[k], s ? d / s : 0); d -= s; } return pts[pts.length - 1]; };
+  const routeKey = (a, b, via) => [a.lat, a.lng, b.lat, b.lng].map(r4).join(',') + '|' + JSON.stringify((via || []).map(v => v.map(r4)));
+  // Calcule (et met en cache dans le programme) les routes maritimes manquantes ; renvoie true si quelque chose a changé
+  async function computeSeaRoutes(c, p, onStatus) {
+    const { nodes } = planNodes(c, p); const todo = [];
+    for (let k = 1; k < nodes.length; k++) { const a = nodes[k - 1], b = nodes[k];
+      if (a.lat == null || b.lat == null || !b.row || !(b.row.dist > 0)) continue;
+      const leg = p.legs[b.row.i], key = routeKey(a, b, leg.via); if (!leg.route || leg.route.k !== key) todo.push({ a, b, leg, key }); }
+    if (!todo.length) return false;
+    onStatus?.('Calcul des routes maritimes…');
+    const land = await loadLand();
+    for (const x of todo) { await new Promise(r => setTimeout(r, 0));
+      const pts = legRoutePoints({ lat: x.a.lat, lng: x.a.lng }, { lat: x.b.lat, lng: x.b.lng }, x.leg.via, land);
+      x.leg.route = { k: x.key, pts: pts.map(q => [r4(q.lat), r4(q.lng)]) }; }
+    return true;
+  }
+  const CORINTH = [[37.9155, 23.0080], [37.9475, 22.9585]]; // entrées est / ouest du canal de Corinthe
+  const clockMin = s => { if (!s) return null; const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+  // Carte réutilisable (capitaine & client). opts: { editable, onMoveNode(node, latlng), labels }
+  const MAPVIEW = {};
+  async function mountRouteMap(el, c, p, opts = {}) {
+    const L = await ensureLeaflet();
+    const tx = opts.labels || {};
+    const { nodes, P } = planNodes(c, p);
+    const located = nodes.filter(n => n.lat != null);
+    el.innerHTML = '';
+    const map = L.map(el, { zoomControl: true, scrollWheelZoom: !!opts.editable, tap: true });
+    const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' });
+    const labelsL = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18 });
+    const plan = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' });
+    L.layerGroup([sat, labelsL]).addTo(map);
+    L.control.layers({ [tx.satellite || 'Satellite']: L.layerGroup([sat, labelsL]), [tx.plan || 'Plan']: plan }, null, { position: 'topright' }).addTo(map);
+    const key = c.id;
+    if (MAPVIEW[key]) map.setView(MAPVIEW[key].center, MAPVIEW[key].zoom);
+    else if (located.length) map.fitBounds(L.latLngBounds(located.map(n => [n.lat, n.lng])).pad(0.25));
+    else map.setView([41, 15], 5);
+    map.on('moveend', () => { MAPVIEW[key] = { center: map.getCenter(), zoom: map.getZoom() }; });
+    // Tracé complet
+    const segs = []; // segments navigués : {day, a, b, row, pts (route maritime)}
+    for (let k = 1; k < nodes.length; k++) {
+      const a = nodes[k - 1], b = nodes[k];
+      if (a.lat == null || b.lat == null || !b.row || !(b.row.dist > 0)) continue;
+      const leg = p.legs[b.row.i], key = routeKey(a, b, leg.via);
+      const pts = leg.route && leg.route.k === key ? leg.route.pts.map(([lat, lng]) => ({ lat, lng })) : [a, ...(leg.via || []).map(([lat, lng]) => ({ lat, lng })), b];
+      segs.push({ day: b.day, a, b, row: b.row, leg, legIndex: b.row.i, pts, nm: pathNm(pts), routed: !!(leg.route && leg.route.k === key) });
+    }
+    const ll = s => s.pts.map(q => [q.lat, q.lng]);
+    L.polyline(segs.map(ll), { color: '#ffffff', weight: 2, opacity: .65, dashArray: '6 6' }).addTo(map);
+    if (opts.editable) { // clic sur un trajet = ajouter un point de passage ; points de passage déplaçables
+      segs.forEach(s => {
+        L.polyline(ll(s), { color: '#000', weight: 16, opacity: 0.001 }).addTo(map).on('click', e => { L.DomEvent.stop(e); opts.onAddVia?.(s, e.latlng); });
+        (s.leg.via || []).forEach(([lat, lng], vi) => {
+          const vm = L.marker([lat, lng], { draggable: true, icon: L.divIcon({ className: 'via-pin', html: '<span></span>', iconSize: [12, 12], iconAnchor: [6, 6] }) }).addTo(map);
+          vm.on('dragend', () => opts.onMoveVia?.(s, vi, vm.getLatLng()));
+          vm.bindPopup(() => { const d = document.createElement('div'); d.innerHTML = `<b>Point de passage</b><br><button class="btn btn-ghost btn-xs" style="margin-top:6px">Supprimer</button>`;
+            d.querySelector('button').onclick = () => opts.onDelVia?.(s, vi); return d; });
+        });
+      });
+    }
+    const dayLayer = L.layerGroup().addTo(map);
+    // Escales
+    const seen = new Map();
+    nodes.forEach(n => {
+      if (n.lat == null) return;
+      const k = n.lat.toFixed(4) + ',' + n.lng.toFixed(4);
+      if (seen.has(k)) { seen.get(k).days.add(n.day); return; }
+      const mk = L.marker([n.lat, n.lng], { draggable: !!opts.editable, icon: L.divIcon({ className: 'stop-pin', html: `<span></span>`, iconSize: [16, 16], iconAnchor: [8, 8] }) }).addTo(map);
+      const ent = { mk, days: new Set([n.day]), node: n };
+      mk.bindTooltip(() => `<b>${esc(n.name)}</b><br>${[...ent.days].filter(Boolean).map(d => (tx.day || 'Day') + ' ' + d).join(', ')}`, { direction: 'top', offset: [0, -8] });
+      if (opts.editable) mk.on('dragend', () => opts.onMoveNode?.(n, mk.getLatLng()));
+      seen.set(k, ent);
+    });
+    if (opts.editable && opts.onMapClick) map.on('click', e => opts.onMapClick(e.latlng));
+    // Bateau
+    const boat = L.marker(located[0] ? [located[0].lat, located[0].lng] : [0, 0], { icon: L.divIcon({ className: 'boat-pin', html: '<span>⛴</span>', iconSize: [34, 34], iconAnchor: [17, 17] }), zIndexOffset: 1000, interactive: false });
+    if (located.length) boat.addTo(map);
+    let anim = null;
+    const stop = () => { if (anim) cancelAnimationFrame(anim.raf); anim = null; };
+    // chemin d'un jour (ou de tout le charter)
+    const pathFor = day => {
+      const ss = day == null ? segs : segs.filter(s => s.day === day);
+      if (!ss.length) { const n = [...nodes].reverse().find(x => x.lat != null && (day == null || x.day <= day)); return n ? [n] : []; }
+      const pts = [ss[0].pts[0]]; ss.forEach(s => pts.push(...s.pts.slice(1))); return pts;
+    };
+    function highlight(day) {
+      dayLayer.clearLayers();
+      const ss = day == null ? segs : segs.filter(s => s.day === day);
+      ss.forEach(s => L.polyline(ll(s), { color: '#e3b35c', weight: 5, opacity: .95, interactive: false }).addTo(dayLayer));
+      seen.forEach(e => e.mk.getElement()?.classList.toggle('on', day == null || e.days.has(day)));
+      if (ss.length && opts.fit !== false) map.fitBounds(L.latLngBounds(ss.flatMap(ll)).pad(0.3), { maxZoom: 11 });
+    }
+    function animate(day, done) {
+      stop(); const pts = pathFor(day); if (!pts.length) return;
+      if (pts.length === 1) { boat.setLatLng([pts[0].lat, pts[0].lng]); return done?.(); }
+      const dists = [0]; for (let k = 1; k < pts.length; k++) dists.push(dists[k - 1] + map.distance([pts[k - 1].lat, pts[k - 1].lng], [pts[k].lat, pts[k].lng]));
+      const total = dists[dists.length - 1] || 1, dur = Math.min(9000, Math.max(2500, pts.length * 1400));
+      const t0 = performance.now();
+      const step = now => {
+        const f = Math.min(1, (now - t0) / dur), d = f * total;
+        let k = 1; while (k < dists.length - 1 && dists[k] < d) k++;
+        const seg = (d - dists[k - 1]) / ((dists[k] - dists[k - 1]) || 1);
+        const q = lerp(pts[k - 1], pts[k], Math.max(0, Math.min(1, seg))); boat.setLatLng([q.lat, q.lng]);
+        if (f < 1) anim.raf = requestAnimationFrame(step); else { anim = null; done?.(); }
+      };
+      anim = { raf: requestAnimationFrame(step) };
+    }
+    // Position prévue maintenant (selon les ETD/ETA du programme)
+    function plannedNow() {
+      const td = today(), nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+      const daySegs = segs.filter(s => s.row.date === td);
+      const dayRow = P.rows.find(r => r.date === td && !r.alt);
+      if (!dayRow) return null;
+      for (const s of daySegs) {
+        const a = clockMin(s.row.etd), dur = (s.row.hours || 0) * 60;
+        if (a == null) continue;
+        if (nowMin < a) return { latlng: s.a, day: dayRow.day, state: 'before' };
+        if (nowMin <= a + dur) return { latlng: alongPath(s.pts, (nowMin - a) / (dur || 1)), day: dayRow.day, state: 'sailing' };
+      }
+      const last = [...nodes].reverse().find(n => n.lat != null && n.date && n.date <= td);
+      return last ? { latlng: last, day: dayRow.day, state: 'arrived' } : null;
+    }
+    setTimeout(() => map.invalidateSize(), 50);
+    return { map, highlight, animate, stop, plannedNow, setBoat: ll => boat.setLatLng([ll.lat, ll.lng]), nodes, segs, P,
+      days: [...new Set(P.rows.filter(r => !r.alt && r.day != null).map(r => r.day))] };
+  }
+  // Barre des jours + fiche du jour (commune capitaine / client)
+  function routeDaysHtml(P, tx, opts = {}) {
+    const days = [...new Set(P.rows.filter(r => !r.alt && r.day != null).map(r => r.day))];
+    return `<div class="route-days">
+      <button class="day-chip on" data-day="">${tx.all || 'Tout'}</button>
+      ${days.map(d => { const r = P.rows.find(x => x.day === d); return `<button class="day-chip ${r.date === today() ? 'today' : ''}" data-day="${d}"><b>${tx.day || 'J'} ${d}</b><small>${fdate(r.date).slice(0, 5)}</small></button>`; }).join('')}
+      <button class="btn btn-gold btn-sm" data-route-play>${tx.play || '▶ Parcours'}</button></div>
+      <div class="route-info" data-route-info></div>`;
+  }
+  function routeDayInfo(P, day, tx, showCons, segNm) {
+    const rows = P.rows.filter(r => !r.alt && (day == null || r.day === day));
+    if (day == null) return `<div class="ri-head"><b>${fmt(P.totalD)} NM</b> · ${hhmm(P.totalH)} ${tx.sailing || 'de navigation'}${showCons ? ` · ${fmt(P.totalL)} L` : ''}</div>`;
+    const r0 = rows[0];
+    return `<div class="ri-head"><b>${tx.day || 'Jour'} ${day}</b> — ${fdate(r0?.date)}</div>
+      ${rows.map(r => `<div class="ri-leg"><div><b>${esc(r.trip || '')}</b>${r.dist ? ` · ${fmt(r.dist)} NM` : ''}${showCons && segNm && segNm[r.i] != null ? ` <span class="muted">(tracé ≈ ${fmt(segNm[r.i], 0)} NM)</span>` : ''}${r.etd && r.dist ? ` · ${esc(r.etd)} → ${esc(r.eta)}` : ''}${showCons ? ` · ${fmt(r.cons)} L` : ''}</div>
+        ${r.remarks ? `<div class="muted small">${esc(r.remarks)}</div>` : ''}</div>`).join('')}`;
+  }
+  function bindRouteControls(root, ctl, P, tx, showCons) {
+    const info = $('[data-route-info]', root); let cur = null;
+    const segNm = showCons ? Object.fromEntries(ctl.segs.map(s => [s.legIndex, s.nm])) : null;
+    const select = (day, play = true) => {
+      cur = day; $$('.day-chip', root).forEach(b => b.classList.toggle('on', String(b.dataset.day) === String(day ?? '')));
+      info.innerHTML = routeDayInfo(P, day, tx, showCons, segNm); ctl.highlight(day); if (play) ctl.animate(day);
+    };
+    $$('.day-chip', root).forEach(b => b.addEventListener('click', () => select(b.dataset.day === '' ? null : +b.dataset.day)));
+    $('[data-route-play]', root)?.addEventListener('click', () => { // tous les jours, l'un après l'autre
+      const days = ctl.days.slice(); let k = 0;
+      const next = () => { if (k >= days.length) return; const d = days[k++]; cur = d;
+        $$('.day-chip', root).forEach(b => b.classList.toggle('on', String(b.dataset.day) === String(d)));
+        info.innerHTML = routeDayInfo(P, d, tx, showCons, segNm); ctl.highlight(d); ctl.animate(d, () => setTimeout(next, 500)); };
+      next();
+    });
+    const now = ctl.plannedNow();
+    if (now) { select(now.day, false); ctl.setBoat(now.latlng);
+      info.insertAdjacentHTML('afterbegin', `<div class="ri-now">⛴ ${now.state === 'sailing' ? (tx.nowSailing || 'En navigation (position prévue)') : now.state === 'before' ? (tx.nowBefore || 'Au mouillage avant le départ du jour') : (tx.nowArrived || 'Arrivé à l’escale du jour')}</div>`); }
+    else select(null, false);
+  }
+
+  // --- côté capitaine : panneau carte dans l'onglet Itinerary ---
+  function mapPanelHtml(c, p) {
+    const { nodes } = planNodes(c, p);
+    const missing = nodes.filter(n => n.lat == null);
+    return `<section class="panel route-panel">
+      <div class="panel-head"><h2>Carte de l’itinéraire</h2>
+        <div class="row-gap wrap">
+          <label class="check"><input type="checkbox" data-share-itin ${p.share_client ? 'checked' : ''}> <span>Visible par le client</span></label>
+          <button class="btn btn-ghost btn-sm" data-act="route-geocode">📍 Localiser les escales</button></div></div>
+      ${missing.length ? `<div class="banner banner-gold small">📍<div><b>Escales non localisées</b> :
+        ${missing.filter((n, k, arr) => arr.findIndex(x => normName(x.name) === normName(n.name)) === k).map(n => `<button class="link-btn" data-place-node="${n.legIndex}:${n.kind}">${esc(n.name || '?')}</button>`).join(' · ')}
+        <br><small>Cliquez « Localiser les escales » (recherche automatique), ou cliquez un nom puis cliquez sur la carte. Vous pouvez aussi déplacer chaque point à la main.</small></div></div>` : ''}
+      <div class="route-map" id="route-map"><div class="muted center small" style="padding:40px">Chargement de la carte…</div></div>
+      <div id="route-ctl"></div>
+      <p class="muted small">Routes maritimes calculées automatiquement en évitant la terre (trait de côte 1:10 000 000, indicatif). Cliquez sur un trajet pour ajouter un point de passage (chenal, canal…), glissez-le pour l’ajuster, touchez-le pour le supprimer. Glissez une escale pour corriger sa position.</p>
+    </section>`;
+  }
+  let PLACING = null;
+  async function bindMapPanel(c) {
+    const el = $('#route-map'); if (!el) return;
+    const p = getPlan(c);
+    const share = $('[data-share-itin]');
+    share?.addEventListener('change', async () => { const q = getPlan(c); q.share_client = share.checked;
+      try { await savePlan(c, q); notifyCharter(c.id); toast(share.checked ? 'Itinéraire visible par le client' : 'Itinéraire masqué au client'); } catch (e) { toast(errMsg(e), 'err'); } });
+    $$('[data-place-node]').forEach(b => b.addEventListener('click', () => { PLACING = b.dataset.placeNode; $$('[data-place-node]').forEach(x => x.classList.toggle('on', x === b)); toast(`Cliquez sur la carte pour placer « ${b.textContent} »`); }));
+    const setNode = async (legIndex, kind, ll) => {
+      const q = getPlan(c), leg = q.legs[legIndex]; if (!leg) return;
+      if (kind === 'from') { leg.from_lat = r6(ll.lat); leg.from_lng = r6(ll.lng); } else { leg.to_lat = r6(ll.lat); leg.to_lng = r6(ll.lng); }
+      try { await savePlan(c, q); notifyCharter(c.id); route(); } catch (e) { toast(errMsg(e), 'err'); }
+    };
+    const saveVia = async (fn) => { const q = getPlan(c); fn(q); try { await savePlan(c, q); notifyCharter(c.id); route(); } catch (e) { toast(errMsg(e), 'err'); } };
+    try {
+      try { if (await computeSeaRoutes(c, p, msg => { el.innerHTML = `<div class="muted center small" style="padding:40px">${msg}</div>`; })) { await savePlan(c, p); notifyCharter(c.id); } }
+      catch (e) { toast('Routes maritimes indisponibles (lignes droites) : ' + errMsg(e), 'err'); }
+      const ctl = await mountRouteMap(el, c, p, { editable: true,
+        onAddVia: (s, ll) => saveVia(q => { const leg = q.legs[s.legIndex], via = (leg.via || []).slice(), pts = [s.a, ...via.map(([lat, lng]) => ({ lat, lng })), s.b];
+          let best = 0, bestCost = Infinity; // insertion qui allonge le moins le trajet
+          for (let k = 0; k < pts.length - 1; k++) { const cost = nmBetween(pts[k], ll) + nmBetween(ll, pts[k + 1]) - nmBetween(pts[k], pts[k + 1]); if (cost < bestCost) { bestCost = cost; best = k; } }
+          via.splice(best, 0, [r6(ll.lat), r6(ll.lng)]); leg.via = via; }),
+        onMoveVia: (s, vi, ll) => saveVia(q => { q.legs[s.legIndex].via[vi] = [r6(ll.lat), r6(ll.lng)]; }),
+        onDelVia: (s, vi) => saveVia(q => { q.legs[s.legIndex].via.splice(vi, 1); if (!q.legs[s.legIndex].via.length) delete q.legs[s.legIndex].via; }),
+        onMoveNode: (n, ll) => setNode(n.legIndex, n.kind, ll),
+        onMapClick: ll => { if (!PLACING) return; const [i, k] = PLACING.split(':'); PLACING = null; setNode(+i, k, ll); } });
+      $('#route-ctl').innerHTML = routeDaysHtml(ctl.P, {});
+      bindRouteControls($('.route-panel'), ctl, ctl.P, {}, true, ctl);
+      // trajets dont la route tracée est bien plus longue que la distance saisie (ex. tour du Péloponnèse au lieu du canal)
+      const odd = ctl.segs.filter(s => s.routed && s.row.dist > 0 && s.nm > s.row.dist * 1.4);
+      if (odd.length) $('#route-ctl').insertAdjacentHTML('beforeend', `<div class="banner banner-gold small">🧭<div>${odd.map(s => {
+        const nearCanal = Math.min(s.a.lat, s.b.lat) - 1 < 37.93 && Math.max(s.a.lat, s.b.lat) + 1 > 37.93 && Math.min(s.a.lng, s.b.lng) - 1 < 22.98 && Math.max(s.a.lng, s.b.lng) + 1 > 22.98;
+        return `<b>${esc(s.row.trip)}</b> : route tracée ${fmt(s.nm, 0)} NM pour ${fmt(s.row.dist)} NM saisis — ajoutez un point de passage en cliquant sur le trajet${nearCanal ? ` ou <button class="link-btn" data-canal="${s.legIndex}">passer par le canal de Corinthe</button>` : ''}.`; }).join('<br>')}</div></div>`);
+      $$('[data-canal]').forEach(btn => btn.addEventListener('click', () => saveVia(q => { const leg = q.legs[+btn.dataset.canal]; const s = ctl.segs.find(x => x.legIndex === +btn.dataset.canal);
+        const e = { lat: CORINTH[0][0], lng: CORINTH[0][1] }, w = { lat: CORINTH[1][0], lng: CORINTH[1][1] };
+        leg.via = nmBetween(s.a, e) < nmBetween(s.a, w) ? [CORINTH[0], CORINTH[1]] : [CORINTH[1], CORINTH[0]]; })));
+    } catch (e) { el.innerHTML = `<div class="muted center small" style="padding:30px">Carte indisponible : ${esc(errMsg(e))}</div>`; }
+  }
+  const r6 = v => Math.round(v * 1e6) / 1e6;
+  ACTIONS['route-geocode'] = async b => {
+    const c = charterById(CURRENT), p = getPlan(c), { nodes } = planNodes(c, p);
+    const todo = nodes.filter(n => n.lat == null);
+    if (!todo.length) return toast('Toutes les escales sont déjà localisées');
+    busy(b, true); let ok = 0, near = nodes.find(n => n.lat != null);
+    const cache = {};
+    for (const n of nodes) {
+      if (n.lat != null) { near = n; continue; }
+      const key = normName(n.name);
+      let g = cache[key];
+      if (g === undefined) { toast(`Recherche de « ${n.name} »…`); try { g = await geocodeName(n.name, near); } catch { g = null; } cache[key] = g; await new Promise(r => setTimeout(r, 1100)); }
+      if (g) { const leg = p.legs[n.legIndex]; if (n.kind === 'from') { leg.from_lat = r6(g.lat); leg.from_lng = r6(g.lng); } else { leg.to_lat = r6(g.lat); leg.to_lng = r6(g.lng); } n.lat = g.lat; n.lng = g.lng; near = n; ok++; }
+    }
+    try { await savePlan(c, p); notifyCharter(c.id); } catch (e) { toast(errMsg(e), 'err'); }
+    busy(b, false); route();
+    const left = planNodes(charterById(CURRENT), getPlan(charterById(CURRENT))).nodes.filter(n => n.lat == null).length;
+    toast(`${ok} escale${ok > 1 ? 's' : ''} localisée${ok > 1 ? 's' : ''}${left ? ` · ${left} à placer à la main` : ''}`, left ? 'err' : undefined);
   };
 
   // Ligne de dépense automatique « Bank fee » = APA reçu × % (suit l'APA et le taux du charter)
