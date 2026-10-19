@@ -103,6 +103,11 @@
       htChip: 'HT', apaLeft: 'Solde APA',
       boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
+      tabHome: 'Aujourd’hui', homeDay: 'Jour', homeOf: 'sur', programmeOfDay: 'Programme du jour', meals: 'Repas', lunch: 'Déjeuner', dinner: 'Dîner',
+      captainNote: 'Le mot du capitaine', freeDay: 'Journée au mouillage / à quai — profitez !', wxTitle: 'Météo', wxWind: 'Vent', wxGust: 'rafales', wxSea: 'Mer', wxWaves: 'vagues',
+      wxRain: 'Pluie', wxWater: 'Eau', wxSun: 'Soleil', wxUv: 'UV', wxNA: 'Prévisions disponibles environ 15 jours avant la date.', wxLoading: 'Chargement de la météo…',
+      startsIn: 'Votre charter commence dans {n} jour(s) — aperçu du premier jour', menuSoon: 'Menu communiqué prochainement',
+      wx_sunny: 'Ensoleillé', wx_partly: 'Éclaircies', wx_cloudy: 'Nuageux', wx_fog: 'Brouillard', wx_drizzle: 'Bruine', wx_rain: 'Pluie', wx_snow: 'Neige', wx_showers: 'Averses', wx_storm: 'Orages',
       tabAccounts: 'Comptes', tabItinerary: 'Itinéraire', programme: 'Programme', trip: 'Trajet', dayShort: 'Jour', allDays: 'Tout', playRoute: '▶ Voir le parcours',
       sailingTime: 'de navigation', mapPlan: 'Plan', routeNote: 'Routes indicatives selon le programme prévu (peuvent évoluer selon la météo et les conditions de mer).',
       nowSailing: 'Aujourd’hui : en navigation (position prévue)', nowBefore: 'Aujourd’hui : avant le départ du jour', nowArrived: 'Aujourd’hui : arrivé à l’escale du jour',
@@ -141,6 +146,11 @@
       htChip: 'excl. VAT', apaLeft: 'APA left',
       boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
+      tabHome: 'Today', homeDay: 'Day', homeOf: 'of', programmeOfDay: 'Today’s programme', meals: 'Meals', lunch: 'Lunch', dinner: 'Dinner',
+      captainNote: 'Captain’s note', freeDay: 'Day at anchor / alongside — enjoy!', wxTitle: 'Weather', wxWind: 'Wind', wxGust: 'gusts', wxSea: 'Sea', wxWaves: 'waves',
+      wxRain: 'Rain', wxWater: 'Water', wxSun: 'Sun', wxUv: 'UV', wxNA: 'Forecast available about 15 days before the date.', wxLoading: 'Loading weather…',
+      startsIn: 'Your charter starts in {n} day(s) — preview of day one', menuSoon: 'Menu to be announced',
+      wx_sunny: 'Sunny', wx_partly: 'Partly cloudy', wx_cloudy: 'Cloudy', wx_fog: 'Fog', wx_drizzle: 'Drizzle', wx_rain: 'Rain', wx_snow: 'Snow', wx_showers: 'Showers', wx_storm: 'Thunderstorms',
       tabAccounts: 'Accounts', tabItinerary: 'Itinerary', programme: 'Programme', trip: 'Trip', dayShort: 'Day', allDays: 'All', playRoute: '▶ Play the route',
       sailingTime: 'sailing', mapPlan: 'Map', routeNote: 'Indicative routes as per the planned programme (subject to weather and sea conditions).',
       nowSailing: 'Today: under way (planned position)', nowBefore: 'Today: before the day’s departure', nowArrived: 'Today: arrived at the day’s stop',
@@ -446,6 +456,7 @@
   const ICON = {
     file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
     fork: svg('<circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v2a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 12v5"/>'),
+    sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
     map: svg('<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>'),
     folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
     plus: svg('<path d="M12 5v14M5 12h14"/>'),
@@ -1136,7 +1147,7 @@
     LANG = store.get('ca-lang') || ((navigator.language || 'en').toLowerCase().startsWith('fr') ? 'fr' : 'en');
     document.documentElement.lang = LANG;
     let B = null, lastAt = null, inflight = false, prevStatus = null;
-    let PLAN = null, planStr = '', CTAB = store.get('ca-tab-' + token) || 'accounts';
+    let PLAN = null, planStr = '', CTAB = 'accounts', firstLoad = true, HOME_DATE = null;
 
     async function refresh() {
       if (inflight) return; inflight = true;
@@ -1145,9 +1156,15 @@
         B = REPORT ? await api.reportView(token) : await api.clientView(token); lastAt = new Date();
         let newPlan = null; if (!REPORT && api.clientItinerary) { try { newPlan = await api.clientItinerary(token); } catch { newPlan = null; } }
         const np = newPlan ? JSON.stringify(newPlan) : '', planChanged = np !== planStr;
-        PLAN = newPlan && (newPlan.legs || []).length ? newPlan : null; planStr = np;
-        const onMap = CTAB === 'itin' && PLAN && $('#client-map');
-        if (!$('#modal-root').innerHTML && !(onMap && !planChanged && prevB === JSON.stringify(B))) render();
+        PLAN = newPlan && ((newPlan.legs || []).length || Object.keys(newPlan.days || {}).length) ? newPlan : null; planStr = np;
+        if (firstLoad && B) { firstLoad = false; // à l'ouverture : page d'accueil du jour pendant le charter (et juste avant)
+          const ds = PLAN ? planDates(B.charter, PLAN) : [], td = localToday();
+          if (ds.length && td <= ds[ds.length - 1] && dayDiff(ds[0], td) <= 7) CTAB = 'home';
+          else { const saved = store.get('ca-tab-' + token); if (saved && saved !== 'home' && (saved !== 'itin' || PLAN)) CTAB = saved; } }
+        if (CTAB === 'itin' && !(PLAN && (PLAN.legs || []).length)) CTAB = 'accounts';
+        if (CTAB === 'home' && !PLAN) CTAB = 'accounts';
+        const quiet = CTAB !== 'accounts' && $('#client-tab-body');
+        if (!$('#modal-root').innerHTML && !(quiet && !planChanged && prevB === JSON.stringify(B))) render();
         if (!REPORT) maybeAnnounceClosed();
       } catch (e) { if (!B) renderError(errMsg(e)); }
       finally { inflight = false; }
@@ -1195,6 +1212,57 @@
           <td data-label="${t('trip')}" class="itin-trip"><b>${esc(r.trip || '')}</b>${r.remarks ? `<div class="itin-rem">${esc(r.remarks)}</div>` : ''}</td>
           <td data-label="NM" class="num">${r.dist ? fmt(r.dist) : ''}</td><td data-label="ETD" class="num">${r.dist ? esc(r.etd || '') : ''}</td><td data-label="ETA" class="num">${esc(r.eta || '')}</td></tr>`).join('')}</tbody></table></div></section>`;
     }
+    function homeDates(c) { return planDates(c, PLAN); }
+    function curHomeDate(c) { const ds = homeDates(c), td = localToday();
+      if (HOME_DATE && ds.includes(HOME_DATE)) return HOME_DATE;
+      return ds.includes(td) ? td : td < ds[0] ? ds[0] : ds[ds.length - 1]; }
+    function clientHomeHtml(c) {
+      const ds = homeDates(c); if (!ds.length) return '';
+      const d = curHomeDate(c), k = ds.indexOf(d), n = dayDiff(d, ds[0]) + 1, td = localToday();
+      const P = computePlan(c, PLAN), rows = P.rows.filter(r => !r.alt && r.date === d), x = (PLAN.days || {})[d] || {};
+      const long = new Date(d + 'T12:00:00').toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      const meal = (label, icon, time, menu) => `<div class="meal"><div class="meal-head"><span>${icon} ${label}</span>${time ? `<b>${esc(time)}</b>` : ''}</div>
+        ${menu ? `<ul>${menu.split('\n').filter(s => s.trim()).map(s => `<li>${esc(s.trim())}</li>`).join('')}</ul>` : `<p class="muted small">${t('menuSoon')}</p>`}</div>`;
+      return `${td < ds[0] ? `<div class="banner banner-info">${ICON.anchor}<div>${t('startsIn').replace('{n}', dayDiff(ds[0], td))}</div></div>` : ''}
+      <section class="home-hero">
+        <button class="home-nav" data-home-nav="${k > 0 ? ds[k - 1] : ''}" ${k > 0 ? '' : 'disabled'} aria-label="prev">‹</button>
+        <div class="home-date"><div class="home-day">${t('homeDay')} ${n} <span>${t('homeOf')} ${dayDiff(ds[ds.length - 1], ds[0]) + 1}</span></div>
+          <h2>${esc(long.charAt(0).toUpperCase() + long.slice(1))}</h2>
+          ${rows.length ? `<div class="home-route">${esc(rows.map(r => r.trip).filter(Boolean).join(' · '))}</div>` : ''}</div>
+        <button class="home-nav" data-home-nav="${k < ds.length - 1 ? ds[k + 1] : ''}" ${k < ds.length - 1 ? '' : 'disabled'} aria-label="next">›</button>
+      </section>
+      <div class="home-grid">
+        <section class="panel home-wx" id="home-wx"><div class="panel-head"><h2>${t('wxTitle')}</h2><span class="muted small" id="wx-place"></span></div><p class="muted small">${t('wxLoading')}</p></section>
+        <section class="panel"><div class="panel-head"><h2>${t('programmeOfDay')}</h2></div>
+          ${rows.some(r => r.dist) ? rows.map(r => `<div class="home-leg">${r.dist ? `<div class="hl-time">${esc(r.etd || '')}${r.eta ? `<span>→ ${esc(r.eta)}</span>` : ''}</div>` : '<div class="hl-time"></div>'}
+            <div><b>${esc(r.trip || '')}</b>${r.dist ? ` <span class="muted small">· ${fmt(r.dist)} NM</span>` : ''}${r.remarks ? `<div class="small">${esc(r.remarks)}</div>` : ''}</div></div>`).join('')
+          : `<p>${rows[0]?.trip ? `<b>${esc(rows[0].trip)}</b> — ` : ''}${t('freeDay')}</p>${rows.filter(r => r.remarks).map(r => `<p class="small">${esc(r.remarks)}</p>`).join('')}`}
+        </section>
+      </div>
+      <section class="panel"><div class="panel-head"><h2>${t('meals')}</h2></div>
+        <div class="meals">${meal(t('lunch'), '🍽', x.lunch_time, x.lunch_menu)}${meal(t('dinner'), '🍷', x.dinner_time, x.dinner_menu)}</div>
+        ${x.note ? `<div class="home-note"><b>${t('captainNote')}</b><p>${esc(x.note)}</p></div>` : ''}
+      </section>`;
+    }
+    async function loadHomeWeather(c) {
+      const box = $('#home-wx'); if (!box) return;
+      const d = curHomeDate(c), pos = dayPosition(c, PLAN, d);
+      const body = html => { box.innerHTML = `<div class="panel-head"><h2>${t('wxTitle')}</h2><span class="muted small">${pos ? esc(pos.name || '') : ''}</span></div>${html}`; };
+      if (!pos) return body(`<p class="muted small">${t('wxNA')}</p>`);
+      const w = await fetchWeather(pos, d);
+      if (curHomeDate(c) !== d || !$('#home-wx')) return;
+      if (!w) return body(`<p class="muted small">${t('wxNA')}</p>`);
+      const [ic, key] = WMO(w.code);
+      body(`<div class="wx-main"><span class="wx-ic">${ic}</span><div><div class="wx-t">${Math.round(w.tmax)}° <span>/ ${Math.round(w.tmin)}°</span></div><div class="muted">${t('wx_' + key)}</div></div></div>
+        <div class="wx-grid">
+          <div><span>${t('wxWind')}</span><b>${compass(w.dir)} ${Math.round(w.wind)} kn</b><small>${w.gust != null ? `${t('wxGust')} ${Math.round(w.gust)} kn · ` : ''}F${beaufort(w.wind)}</small></div>
+          ${w.wave != null ? `<div><span>${t('wxSea')}</span><b>${fmt(w.wave, 1)} m</b><small>${t('wxWaves')}</small></div>` : ''}
+          ${w.sst != null ? `<div><span>${t('wxWater')}</span><b>${Math.round(w.sst)}°</b></div>` : ''}
+          ${w.rain != null ? `<div><span>${t('wxRain')}</span><b>${Math.round(w.rain)} %</b></div>` : ''}
+          ${w.sunrise ? `<div><span>${t('wxSun')}</span><b>${w.sunrise} – ${w.sunset}</b></div>` : ''}
+          ${w.uv != null ? `<div><span>${t('wxUv')}</span><b>${Math.round(w.uv)}</b></div>` : ''}
+        </div>`);
+    }
     async function mountClientMap(c) {
       const el = $('#client-map'); if (!el) return;
       try { const ctl = await mountRouteMap(el, c, PLAN, { labels: TX() }); bindRouteControls($('.route-panel'), ctl, ctl.P, TX(), false); }
@@ -1217,7 +1285,7 @@
       </header>
       <main class="container">
         <section class="hero">
-          <div class="eyebrow">${REPORT ? t('reportTitle') : t('statement')}</div>
+          <div class="eyebrow">${REPORT ? t('reportTitle') : PLAN && CTAB !== 'accounts' ? esc(c.yacht || YACHT) : t('statement')}</div>
           <h1>${esc(c.title)}</h1>
           <p class="muted">${esc(c.client_name || '')}${c.client_name ? ' · ' : ''}${fdate(c.start_date)} → ${fdate(c.end_date)}</p>
           <div class="hero-actions no-print">
@@ -1228,9 +1296,10 @@
           </div>
         </section>
         ${PLAN ? `<nav class="folder-tabs client-tabs no-print">
-          <a href="#" data-ctab="accounts" class="folder-tab ${CTAB !== 'itin' ? 'on' : ''}">${ICON.sheet}<span><b>${t('tabAccounts')}</b></span></a>
-          <a href="#" data-ctab="itin" class="folder-tab ${CTAB === 'itin' ? 'on' : ''}">${ICON.map}<span><b>${t('tabItinerary')}</b></span></a></nav>` : ''}
-        ${PLAN && CTAB === 'itin' ? clientItinHtml(c) : `
+          <a href="#" data-ctab="home" class="folder-tab ${CTAB === 'home' ? 'on' : ''}">${ICON.sun}<span><b>${t('tabHome')}</b></span></a>
+          <a href="#" data-ctab="accounts" class="folder-tab ${CTAB === 'accounts' ? 'on' : ''}">${ICON.sheet}<span><b>${t('tabAccounts')}</b></span></a>
+          ${(PLAN.legs || []).length ? `<a href="#" data-ctab="itin" class="folder-tab ${CTAB === 'itin' ? 'on' : ''}">${ICON.map}<span><b>${t('tabItinerary')}</b></span></a>` : ''}</nav>` : ''}
+        ${PLAN && CTAB === 'home' ? `<div id="client-tab-body">${clientHomeHtml(c)}</div>` : PLAN && CTAB === 'itin' ? `<div id="client-tab-body">${clientItinHtml(c)}</div>` : `
         ${signed ? `<div class="banner banner-ok">${ICON.check}<div><strong>${t('signedBanner')}</strong><br>
           <span>${t('signedOn')} ${fdatetime(c.client_signed_at)} ${t('by')} ${esc(c.client_signed_name)}</span></div></div>`
         : closed ? `<div class="banner banner-gold">${ICON.lock}<div><strong>${t('closedBanner')}</strong></div>
@@ -1257,6 +1326,7 @@
         <footer class="foot muted small">${esc(c.yacht || YACHT)} · ${t('statement')} · ${new Date().toLocaleDateString(locale())}</footer>
       </main>`;
       if (PLAN && CTAB === 'itin') mountClientMap(c);
+      if (PLAN && CTAB === 'home') loadHomeWeather(c);
     }
 
     // Signature en 2 étapes : 1) tips  2) signature
@@ -1349,6 +1419,8 @@
     }
 
     $('#app').addEventListener('click', e => {
+      const hn = e.target.closest('[data-home-nav]');
+      if (hn) { if (hn.dataset.homeNav) { HOME_DATE = hn.dataset.homeNav; render(); } return; }
       const tb = e.target.closest('[data-ctab]');
       if (tb) { e.preventDefault(); CTAB = tb.dataset.ctab; store.set('ca-tab-' + token, CTAB); render(); window.scrollTo(0, 0); return; }
       const b = e.target.closest('[data-act],[data-lang]'); if (!b) return;
@@ -1743,7 +1815,7 @@
       </div>
       ${folderTabs(c, tab)}
       ${missing ? `<div class="banner banner-gold">${ICON.lock}<div>Pour utiliser ce dossier, exécutez une fois le fichier <b>maj-dossiers.sql</b> dans Supabase (SQL Editor), puis rechargez la page.</div></div>` : ''}
-      ${tab === 'itinerary' && !missing ? itineraryPanel(c) + (getPlan(c).legs.length ? mapPanelHtml(c, getPlan(c)) : '') : ''}
+      ${tab === 'itinerary' && !missing ? itineraryPanel(c) + (getPlan(c).legs.length ? mapPanelHtml(c, getPlan(c)) : '') + daysPanelHtml(c, getPlan(c)) : ''}
       <section class="panel">
         <div class="panel-head"><h2>${tab === 'itinerary' ? 'Documents & notes' : esc(label)}</h2>
           ${missing ? '' : `<div class="row-gap"><button class="btn btn-ghost btn-sm" data-act="doc-note" data-folder="${tab}">${ICON.edit}Ajouter une note</button>
@@ -2416,7 +2488,7 @@
     return `<section class="panel route-panel">
       <div class="panel-head"><h2>Carte de l’itinéraire</h2>
         <div class="row-gap wrap">
-          <label class="check"><input type="checkbox" data-share-itin ${p.share_client ? 'checked' : ''}> <span>Visible par le client</span></label>
+          <label class="check"><input type="checkbox" data-share-itin ${p.share_client ? 'checked' : ''}> <span>Visible par le client <small class="muted">(accueil du jour + itinéraire)</small></span></label>
           <button class="btn btn-ghost btn-sm" data-act="route-geocode">📍 Localiser les escales</button></div></div>
       ${missing.length ? `<div class="banner banner-gold small">📍<div><b>Escales non localisées</b> :
         ${missing.filter((n, k, arr) => arr.findIndex(x => normName(x.name) === normName(n.name)) === k).map(n => `<button class="link-btn" data-place-node="${n.legIndex}:${n.kind}">${esc(n.name || '?')}</button>`).join(' · ')}
@@ -2482,6 +2554,81 @@
     busy(b, false); route();
     const left = planNodes(charterById(CURRENT), getPlan(charterById(CURRENT))).nodes.filter(n => n.lat == null).length;
     toast(`${ok} escale${ok > 1 ? 's' : ''} localisée${ok > 1 ? 's' : ''}${left ? ` · ${left} à placer à la main` : ''}`, left ? 'err' : undefined);
+  };
+
+  // ---------------- Journées : repas & accueil client ----------------
+  const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  // Jours du charter : dates du charter + dates du programme
+  function planDates(c, p) {
+    const set = new Set((p.legs || []).filter(l => !l.alt && l.date).map(l => l.date));
+    if (c.start_date && c.end_date && c.end_date >= c.start_date) for (let d = c.start_date, k = 0; d <= c.end_date && k < 60; d = addDays(d, 1), k++) set.add(d);
+    return [...set].sort();
+  }
+  // Position d'un jour (escale d'arrivée du dernier trajet du jour, sinon la dernière escale connue)
+  function dayPosition(c, p, date) {
+    const { nodes } = planNodes(c, p);
+    const n = [...nodes].reverse().find(x => x.lat != null && x.date && x.date <= date) || nodes.find(x => x.lat != null);
+    return n ? { lat: n.lat, lng: n.lng, name: n.name } : null;
+  }
+  // Météo Open-Meteo (gratuit, sans clé) : prévisions du jour + état de la mer
+  const WX_CACHE = {};
+  async function fetchWeather(pos, date) {
+    const key = `${pos.lat.toFixed(2)},${pos.lng.toFixed(2)},${date}`;
+    if (WX_CACHE[key]) return WX_CACHE[key];
+    const qs = `latitude=${pos.lat.toFixed(4)}&longitude=${pos.lng.toFixed(4)}&timezone=auto&start_date=${date}&end_date=${date}`;
+    const [w, m] = await Promise.all([
+      fetch(`https://api.open-meteo.com/v1/forecast?${qs}&daily=weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,precipitation_probability_max,sunrise,sunset,uv_index_max&wind_speed_unit=kn`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`https://marine-api.open-meteo.com/v1/marine?${qs}&daily=wave_height_max,sea_surface_temperature_max`).then(r => r.ok ? r.json() : null).catch(() => null)]);
+    const d = w?.daily, s = m?.daily;
+    if (!d || d.weather_code?.[0] == null) return (WX_CACHE[key] = null);
+    return (WX_CACHE[key] = { code: d.weather_code[0], tmax: d.temperature_2m_max[0], tmin: d.temperature_2m_min[0], wind: d.wind_speed_10m_max[0], gust: d.wind_gusts_10m_max?.[0],
+      dir: d.wind_direction_10m_dominant[0], rain: d.precipitation_probability_max?.[0], sunrise: d.sunrise?.[0]?.slice(11, 16), sunset: d.sunset?.[0]?.slice(11, 16), uv: d.uv_index_max?.[0],
+      wave: s?.wave_height_max?.[0], sst: s?.sea_surface_temperature_max?.[0] });
+  }
+  const WMO = c => c === 0 ? ['☀️', 'sunny'] : c <= 2 ? ['🌤️', 'partly'] : c === 3 ? ['☁️', 'cloudy'] : c <= 48 ? ['🌫️', 'fog'] : c <= 57 ? ['🌦️', 'drizzle']
+    : c <= 67 ? ['🌧️', 'rain'] : c <= 77 ? ['🌨️', 'snow'] : c <= 82 ? ['🌦️', 'showers'] : c <= 86 ? ['🌨️', 'snow'] : ['⛈️', 'storm'];
+  const compass = deg => ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+  const beaufort = kn => [1, 4, 7, 11, 17, 22, 28, 34, 41, 48, 56, 64].findIndex(x => kn < x) === -1 ? 12 : [1, 4, 7, 11, 17, 22, 28, 34, 41, 48, 56, 64].findIndex(x => kn < x);
+
+  // --- côté capitaine : panneau « Journées (accueil client) » dans l'onglet Itinerary ---
+  function daysPanelHtml(c, p) {
+    const dates = planDates(c, p); if (!dates.length) return '';
+    const P = computePlan(c, p), days = p.days || {};
+    const first = dates[0];
+    return `<section class="panel days-panel">
+      <div class="panel-head"><h2>Journées — page d’accueil du client</h2></div>
+      <p class="muted small">Chaque jour, le client voit à l’ouverture de son lien : la date, le jour, la météo du lieu, le programme du jour et les repas ci-dessous.
+        Les menus n’apparaissent que sur cette page d’accueil (pas dans l’itinéraire). ${p.share_client ? '' : '<b>Cochez « Visible par le client » sur la carte pour l’activer.</b>'}</p>
+      <div class="days-grid">${dates.map(d => { const x = days[d] || {}, rows = P.rows.filter(r => !r.alt && r.date === d);
+        const n = dayDiff(d, first) + 1;
+        return `<div class="day-card ${d === localToday() ? 'today' : ''}" data-act="day-edit" data-date="${d}">
+          <div class="dc-head"><b>Jour ${n}</b><span>${fdate(d)}</span></div>
+          <div class="dc-trip">${rows.length ? rows.map(r => esc(r.trip || '')).join(' · ') : '<span class="muted">—</span>'}</div>
+          <div class="dc-meal"><span>🍽 Lunch${x.lunch_time ? ' ' + esc(x.lunch_time) : ''}</span>${x.lunch_menu ? `<small>${esc(x.lunch_menu.split('\n')[0])}${x.lunch_menu.includes('\n') ? '…' : ''}</small>` : '<small class="muted">à compléter</small>'}</div>
+          <div class="dc-meal"><span>🍷 Dinner${x.dinner_time ? ' ' + esc(x.dinner_time) : ''}</span>${x.dinner_menu ? `<small>${esc(x.dinner_menu.split('\n')[0])}${x.dinner_menu.includes('\n') ? '…' : ''}</small>` : '<small class="muted">à compléter</small>'}</div>
+          ${x.note ? `<div class="dc-note small">✉️ ${esc(x.note.slice(0, 60))}${x.note.length > 60 ? '…' : ''}</div>` : ''}
+        </div>`; }).join('')}</div>
+    </section>`;
+  }
+  ACTIONS['day-edit'] = b => {
+    const c = charterById(CURRENT), p = getPlan(c), d = b.dataset.date, x = (p.days || {})[d] || {};
+    const dates = planDates(c, p), n = dayDiff(d, dates[0]) + 1;
+    const m = openModal({ title: `Jour ${n} — ${fdate(d)}`, wide: true,
+      body: `<form class="form-grid" id="f-day">
+        <label class="field"><span>🍽 Heure du lunch</span><input type="time" name="lunch_time" value="${esc(x.lunch_time || '')}"></label>
+        <label class="field"><span>🍷 Heure du dinner</span><input type="time" name="dinner_time" value="${esc(x.dinner_time || '')}"></label>
+        <label class="field"><span>Menu du lunch <small>(une ligne par plat)</small></span><textarea name="lunch_menu" rows="6" placeholder="Burrata, tomates anciennes&#10;Linguine aux palourdes&#10;Tiramisu">${esc(x.lunch_menu || '')}</textarea></label>
+        <label class="field"><span>Menu du dinner <small>(une ligne par plat)</small></span><textarea name="dinner_menu" rows="6" placeholder="Carpaccio de daurade&#10;Filet de bœuf, légumes grillés&#10;Sorbet citron">${esc(x.dinner_menu || '')}</textarea></label>
+        <label class="field span-2"><span>Mot du jour <small>(facultatif — ex. « Tenue de soirée », « Réveil 7h pour la randonnée »)</small></span><textarea name="note" rows="2">${esc(x.note || '')}</textarea></label>
+      </form>`,
+      footer: `<button class="btn btn-ghost" data-close>Annuler</button><button class="btn btn-primary" data-ok>Enregistrer</button>` });
+    $('[data-ok]', m).onclick = async ev => {
+      const f = $('#f-day', m); busy(ev.currentTarget, true);
+      const q = getPlan(c); q.days = q.days || {};
+      const v = { lunch_time: f.lunch_time.value || null, lunch_menu: f.lunch_menu.value.trim() || null, dinner_time: f.dinner_time.value || null, dinner_menu: f.dinner_menu.value.trim() || null, note: f.note.value.trim() || null };
+      if (Object.values(v).some(Boolean)) q.days[d] = v; else delete q.days[d];
+      try { await savePlan(c, q); notifyCharter(c.id); closeModal(); route(); toast('Journée enregistrée'); } catch (e) { toast(errMsg(e), 'err'); busy(ev.currentTarget, false); }
+    };
   };
 
   // Ligne de dépense automatique « Bank fee » = APA reçu × % (suit l'APA et le taux du charter)

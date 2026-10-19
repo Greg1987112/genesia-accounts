@@ -517,3 +517,51 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .itin-table tr.is-today td { background: #fff8e8; }
 .client-tabs { max-width: 480px; }
 .via-pin span { display: block; width: 10px; height: 10px; background: #fff; border: 2px solid var(--navy); transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.3); }
+
+/* Page d'accueil du jour (client) */
+.client-tabs { max-width: 640px; }
+.home-hero { display: flex; align-items: center; gap: 12px; background: linear-gradient(135deg, var(--navy), #1d4a73); color: #fff; border-radius: var(--radius);
+  padding: 22px 16px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.home-date { flex: 1; text-align: center; min-width: 0; }
+.home-day { text-transform: uppercase; letter-spacing: .12em; font-size: .8rem; color: var(--gold); font-weight: 700; }
+.home-day span { color: #c9d6e3; font-weight: 500; }
+.home-date h2 { font-family: 'Cormorant Garamond', serif; font-size: 2rem; margin: 4px 0; color: #fff; }
+.home-route { color: #e6edf4; font-size: .95rem; }
+.home-nav { flex: none; width: 40px; height: 40px; border-radius: 50%; border: 1px solid rgba(255,255,255,.35); background: rgba(255,255,255,.08); color: #fff; font-size: 1.5rem; line-height: 1; cursor: pointer; }
+.home-nav:disabled { opacity: .25; cursor: default; }
+.home-grid { display: grid; grid-template-columns: 1fr 1.3fr; gap: 16px; }
+@media (max-width: 760px) { .home-grid { grid-template-columns: 1fr; } .home-date h2 { font-size: 1.5rem; } }
+.wx-main { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+.wx-ic { font-size: 2.8rem; line-height: 1; }
+.wx-t { font-size: 1.9rem; font-weight: 700; color: var(--navy); }
+.wx-t span { font-size: 1.1rem; color: var(--ink-2); font-weight: 500; }
+.wx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.wx-grid > div { background: #faf7f0; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; }
+.wx-grid span { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-2); }
+.wx-grid b { color: var(--navy); }
+.wx-grid small { color: var(--ink-2); font-size: .72rem; }
+.home-leg { display: flex; gap: 12px; padding: 10px 0; border-top: 1px dashed var(--line); }
+.home-leg:first-of-type { border-top: 0; }
+.hl-time { flex: none; width: 64px; font-weight: 700; color: var(--navy); display: flex; flex-direction: column; }
+.hl-time span { font-weight: 500; color: var(--ink-2); font-size: .85rem; }
+.meals { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 760px) { .meals { grid-template-columns: 1fr; } }
+.meal { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: #fffdf8; }
+.meal-head { display: flex; justify-content: space-between; align-items: baseline; font-family: 'Cormorant Garamond', serif; font-size: 1.35rem; color: var(--navy); margin-bottom: 6px; }
+.meal-head b { font-family: Inter, sans-serif; font-size: .95rem; color: var(--gold); }
+.meal ul { margin: 0; padding: 0; list-style: none; }
+.meal li { padding: 5px 0; border-top: 1px dotted var(--line); text-align: center; font-style: italic; }
+.meal li:first-child { border-top: 0; }
+.home-note { margin-top: 14px; background: #f3f7fb; border-left: 3px solid var(--gold); padding: 10px 14px; border-radius: 8px; }
+.home-note p { margin: 4px 0 0; white-space: pre-wrap; }
+/* Journées (capitaine) */
+.days-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.day-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: 6px; transition: border-color .12s; }
+.day-card:hover { border-color: var(--gold); }
+.day-card.today { box-shadow: inset 0 3px 0 var(--gold); }
+.dc-head { display: flex; justify-content: space-between; color: var(--navy); }
+.dc-head span { color: var(--ink-2); font-size: .85rem; }
+.dc-trip { font-size: .85rem; font-weight: 600; }
+.dc-meal { display: flex; flex-direction: column; font-size: .82rem; }
+.dc-meal small { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dc-note { color: var(--ink-2); }
