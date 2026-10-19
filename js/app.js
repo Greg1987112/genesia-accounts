@@ -2038,27 +2038,43 @@
   const LAND_JSON = 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-10m.json';
   const TOPOJSON_JS = 'https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js';
   let LAND = null;
+  // Petites îles (Capri, Antipaxos…) absentes de land-10m : couche « minor islands » de Natural Earth
+  const MINOR_ISLANDS_JSON = 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_10m_minor_islands.geojson';
   async function loadLand() {
     if (LAND) return LAND;
     await loadScript(TOPOJSON_JS);
+    const polys = [];
+    const add = f => { const g = f.geometry || f; const list = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+      list.forEach(rings => { let a = 180, b = 90, c = -180, d = -90; rings[0].forEach(([x, y]) => { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; }); polys.push({ rings, bb: [a, b, c, d] }); }); };
     const topo = await (await fetch(LAND_JSON)).json();
     const geo = window.topojson.feature(topo, topo.objects.land);
-    const polys = [];
-    (geo.features || [geo]).forEach(f => { const g = f.geometry || f; const list = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
-      list.forEach(rings => { let a = 180, b = 90, c = -180, d = -90; rings[0].forEach(([x, y]) => { if (x < a) a = x; if (x > c) c = x; if (y < b) b = y; if (y > d) d = y; }); polys.push({ rings, bb: [a, b, c, d] }); }); });
+    (geo.features || [geo]).forEach(add);
+    try { const mi = await (await fetch(MINOR_ISLANDS_JSON)).json(); (mi.features || []).forEach(add); } catch { /* facultatif */ }
     return (LAND = polys);
+  }
+  // Trait de côte détaillé OpenStreetMap (Overpass) pour les trajets courts : petites îles, caps, ports
+  const COAST_CACHE = {};
+  async function fetchCoast(s, w, n, e) {
+    const key = [s, w, n, e].map(v => v.toFixed(2)).join(',');
+    if (COAST_CACHE[key]) return COAST_CACHE[key];
+    if ((n - s) * (e - w) > 1.2) return (COAST_CACHE[key] = []); // trop grand : on garde Natural Earth
+    try {
+      const q = `[out:json][timeout:25];way["natural"="coastline"](${s.toFixed(4)},${w.toFixed(4)},${n.toFixed(4)},${e.toFixed(4)});out geom;`;
+      const ctrl = new AbortController(), tm = setTimeout(() => ctrl.abort(), 30000);
+      const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctrl.signal });
+      clearTimeout(tm); if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      return (COAST_CACHE[key] = (j.elements || []).filter(x => x.type === 'way' && x.geometry).map(x => x.geometry.map(g => [g.lon, g.lat])));
+    } catch { return (COAST_CACHE[key] = []); }
   }
   const nmBetween = (a, b) => { const R = 3440.065, t = Math.PI / 180, dLa = (b.lat - a.lat) * t, dLo = (b.lng - a.lng) * t;
     const h = Math.sin(dLa / 2) ** 2 + Math.cos(a.lat * t) * Math.cos(b.lat * t) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); };
   const pathNm = pts => pts.reduce((s, p, i) => i ? s + nmBetween(pts[i - 1], p) : 0, 0);
-  function seaRoute(a, b, land, padF = 0.6) {
-    const span = Math.max(Math.abs(a.lat - b.lat), Math.abs(a.lng - b.lng));
-    const pad = Math.max(0.25, span * padF);
-    const minLat = Math.min(a.lat, b.lat) - pad, maxLat = Math.max(a.lat, b.lat) + pad;
+  // Rastérise la terre d'une zone sur un canvas → grille terre / mer
+  function landGrid(minLat, maxLat, minLng, maxLng, cell, land, buffer = 0, coast = []) {
     const kx = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
-    const minLng = Math.min(a.lng, b.lng) - pad / kx, maxLng = Math.max(a.lng, b.lng) + pad / kx;
-    const cell = Math.max(0.004, (maxLat - minLat) / 420); // ≈ 450 m mini
-    const H = Math.ceil((maxLat - minLat) / cell), W = Math.ceil((maxLng - minLng) * kx / cell);
+    const H = Math.max(2, Math.ceil((maxLat - minLat) / cell)), W = Math.max(2, Math.ceil((maxLng - minLng) * kx / cell));
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
     const g = cv.getContext('2d'); g.fillStyle = '#000';
     const X = lng => (lng - minLng) * kx / cell, Y = lat => (maxLat - lat) / cell;
@@ -2066,56 +2082,97 @@
     land.forEach(p => { if (p.bb[2] < minLng || p.bb[0] > maxLng || p.bb[3] < minLat || p.bb[1] > maxLat) return;
       p.rings.forEach(r => { r.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.closePath(); }); });
     g.fill('evenodd');
-    const px = g.getImageData(0, 0, W, H).data, N = W * H, isLand = new Uint8Array(N);
+    if (coast.length) { // côtes OSM : îles fermées remplies, autres côtes = murs infranchissables
+      g.strokeStyle = '#000'; g.lineWidth = 1.6; g.lineJoin = 'round';
+      coast.forEach(l => { if (l.length < 2) return; g.beginPath(); l.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y)));
+        const closed = l[0][0] === l[l.length - 1][0] && l[0][1] === l[l.length - 1][1]; if (closed) { g.closePath(); g.fill(); } g.stroke(); });
+    }
+    const px = g.getImageData(0, 0, W, H).data, N = W * H; let isLand = new Uint8Array(N);
     for (let i = 0; i < N; i++) isLand[i] = px[i * 4 + 3] > 40 ? 1 : 0;
-    const idx = (x, y) => y * W + x;
-    const snap = (pt) => { // case d'eau la plus proche (ports et marinas sont souvent « dans » le trait de côte)
-      const x0 = Math.max(0, Math.min(W - 1, Math.round(X(pt.lng)))), y0 = Math.max(0, Math.min(H - 1, Math.round(Y(pt.lat))));
-      if (!isLand[idx(x0, y0)]) return [x0, y0];
-      for (let r = 1; r < 60; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue; const x = x0 + dx, y = y0 + dy;
-        if (x >= 0 && y >= 0 && x < W && y < H && !isLand[idx(x, y)]) return [x, y]; }
-      return null; };
-    const s = snap(a), e = snap(b); if (!s || !e) return null;
-    const S0 = idx(s[0], s[1]), E0 = idx(e[0], e[1]);
+    if (coast.length) { // la mer = l'eau reliée aux bords de la zone ; l'eau enfermée par une côte = terre
+      const sea = new Uint8Array(N), st = [];
+      for (let x = 0; x < W; x++) { st.push(x, (H - 1) * W + x); } for (let y = 0; y < H; y++) { st.push(y * W, y * W + W - 1); }
+      while (st.length) { const i = st.pop(); if (sea[i] || isLand[i]) continue; sea[i] = 1; const x = i % W, y = (i / W) | 0;
+        if (x) st.push(i - 1); if (x < W - 1) st.push(i + 1); if (y) st.push(i - W); if (y < H - 1) st.push(i + W); }
+      let n = 0; for (let i = 0; i < N; i++) if (sea[i]) n++;
+      if (n > N * 0.05) for (let i = 0; i < N; i++) isLand[i] = sea[i] ? 0 : 1;
+    }
+    for (let r = 0; r < buffer; r++) { // marge de sécurité le long des côtes (le trait de côte est simplifié)
+      const nx = isLand.slice();
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (isLand[i]) continue;
+        if ((x && isLand[i - 1]) || (x < W - 1 && isLand[i + 1]) || (y && isLand[i - W]) || (y < H - 1 && isLand[i + W])) nx[i] = 1; }
+      isLand = nx;
+    }
+    const toLL = i => ({ lat: maxLat - (((i / W) | 0) + 0.5) * cell, lng: minLng + ((i % W) + 0.5) * cell / kx });
+    const near = (pt, maxR = 80) => { // case de mer la plus proche
+      const x0 = Math.max(0, Math.min(W - 1, Math.floor(X(pt.lng)))), y0 = Math.max(0, Math.min(H - 1, Math.floor(Y(pt.lat))));
+      if (!isLand[y0 * W + x0]) return y0 * W + x0;
+      for (let r = 1; r < maxR; r++) { let best = -1, bd = Infinity;
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) { if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = x0 + dx, y = y0 + dy; if (x < 0 || y < 0 || x >= W || y >= H || isLand[y * W + x]) continue; const d = dx * dx + dy * dy; if (d < bd) { bd = d; best = y * W + x; } }
+        if (best >= 0) return best; }
+      return -1; };
+    return { W, H, isLand, toLL, near };
+  }
+  // Ramène une escale « à terre » (centre-ville, port mal tracé) sur l'eau la plus proche
+  async function snapToSea(pt, land) {
+    const d = 0.08, coast = await fetchCoast(pt.lat - d, pt.lng - d * 1.4, pt.lat + d, pt.lng + d * 1.4);
+    const G = landGrid(pt.lat - d, pt.lat + d, pt.lng - d * 1.4, pt.lng + d * 1.4, 0.0006, land, 1, coast);
+    const i = G.near(pt, 250); if (i < 0) return pt;
+    const q = G.toLL(i); return nmBetween(pt, q) < 0.05 ? pt : { lat: r6(q.lat), lng: r6(q.lng) };
+  }
+  async function seaRoute(a, b, land, padF = 0.6) {
+    const span = Math.max(Math.abs(a.lat - b.lat), Math.abs(a.lng - b.lng));
+    const pad = Math.max(0.15, span * padF);
+    const minLat = Math.min(a.lat, b.lat) - pad, maxLat = Math.max(a.lat, b.lat) + pad;
+    const kx = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const minLng = Math.min(a.lng, b.lng) - pad / kx, maxLng = Math.max(a.lng, b.lng) + pad / kx;
+    const cell = Math.max(0.0015, (maxLat - minLat) / 600); // ≈ 170 m pour les trajets courts
+    const buffer = Math.max(1, Math.round(0.003 / cell));   // ≈ 300 m de marge le long des côtes
+    const coast = await fetchCoast(minLat, minLng, maxLat, maxLng);
+    const G = landGrid(minLat, maxLat, minLng, maxLng, cell, land, buffer, coast), { W, H, isLand } = G, N = W * H;
+    const S0 = G.near(a, 120), E0 = G.near(b, 120); if (S0 < 0 || E0 < 0) return null;
+    const ex = E0 % W, ey = (E0 / W) | 0;
     const gS = new Float32Array(N).fill(Infinity), came = new Int32Array(N).fill(-1), closed = new Uint8Array(N);
-    // tas binaire
     const heap = [], hv = [];
     const push = (i, f) => { heap.push(i); hv.push(f); let k = heap.length - 1; while (k) { const q = (k - 1) >> 1; if (hv[q] <= hv[k]) break; [heap[q], heap[k]] = [heap[k], heap[q]]; [hv[q], hv[k]] = [hv[k], hv[q]]; k = q; } };
     const pop = () => { const top = heap[0], li = heap.pop(), lv = hv.pop(); if (heap.length) { heap[0] = li; hv[0] = lv; let k = 0;
       for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && hv[l] < hv[m]) m = l; if (r < heap.length && hv[r] < hv[m]) m = r; if (m === k) break;
         [heap[m], heap[k]] = [heap[k], heap[m]]; [hv[m], hv[k]] = [hv[k], hv[m]]; k = m; } } return top; };
-    const hx = i => { const x = i % W, y = (i / W) | 0, dx = Math.abs(x - e[0]), dy = Math.abs(y - e[1]); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
+    const hx = i => { const dx = Math.abs(i % W - ex), dy = Math.abs(((i / W) | 0) - ey); return Math.max(dx, dy) + 0.4142 * Math.min(dx, dy); };
     gS[S0] = 0; push(S0, hx(S0));
     const D = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, 1.4142], [1, -1, 1.4142], [-1, 1, 1.4142], [-1, -1, 1.4142]];
     let found = false, guard = 0;
-    while (heap.length && guard++ < 2e6) {
+    while (heap.length && guard++ < 4e6) {
       const cur = pop(); if (cur === E0) { found = true; break; } if (closed[cur]) continue; closed[cur] = 1;
       const x = cur % W, y = (cur / W) | 0;
       for (const [dx, dy, c] of D) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-        const n = idx(nx, ny); if (isLand[n] || closed[n]) continue;
-        if (dx && dy && (isLand[idx(x + dx, y)] || isLand[idx(x, y + dy)])) continue; // pas de coupe en diagonale
+        const n = ny * W + nx; if (isLand[n] || closed[n]) continue;
+        if (dx && dy && (isLand[y * W + x + dx] || isLand[(y + dy) * W + x])) continue;
         const ng = gS[cur] + c; if (ng < gS[n]) { gS[n] = ng; came[n] = cur; push(n, ng + hx(n)); } }
     }
     if (!found) return null;
     const cells = []; for (let k = E0; k !== -1; k = came[k]) cells.push(k); cells.reverse();
-    // lissage : on garde le point visible le plus loin (ligne de vue sans terre)
     const clear = (i, j) => { let x0 = i % W, y0 = (i / W) | 0; const x1 = j % W, y1 = (j / W) | 0, dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
-      for (;;) { if (isLand[idx(x0, y0)]) return false; if (x0 === x1 && y0 === y1) return true; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } } };
+      for (;;) { if (isLand[y0 * W + x0]) return false; if (x0 === x1 && y0 === y1) return true; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } } };
     const keep = [cells[0]]; let k = 0;
     while (k < cells.length - 1) { let j = cells.length - 1; while (j > k + 1 && !clear(cells[k], cells[j])) j--; keep.push(cells[j]); k = j; }
-    const toLL = i => ({ lat: r4(maxLat - (((i / W) | 0) + 0.5) * cell), lng: r4(minLng + ((i % W) + 0.5) * cell / kx) });
-    return [a, ...keep.slice(1, -1).map(toLL), b];
+    const ll = i => { const q = G.toLL(i); return { lat: r4(q.lat), lng: r4(q.lng) }; };
+    const mid = keep.map(ll);
+    // escale → première case de mer (hors marge côtière) → … → dernière case de mer → escale
+    const out = [a]; mid.forEach(q => { if (nmBetween(out[out.length - 1], q) > 0.05) out.push(q); });
+    if (nmBetween(out[out.length - 1], b) > 0.05) out.push(b); else out[out.length - 1] = b;
+    return out;
   }
   const r4 = v => Math.round(v * 1e4) / 1e4;
   // Route d'un trajet : départ → points de passage → arrivée ; segments vers une escale = route maritime auto,
   // segment court entre 2 points de passage (canal, chenal) = ligne droite.
-  function legRoutePoints(a, b, via, land) {
+  async function legRoutePoints(a, b, via, land) {
     const pts = [a, ...(via || []).map(([lat, lng]) => ({ lat, lng })), b], out = [a];
     for (let k = 1; k < pts.length; k++) {
       const p = pts[k - 1], q = pts[k], straight = nmBetween(p, q), bothVia = k > 1 && k < pts.length - 1;
       let seg = null;
-      if (land && !(bothVia && straight < 12)) { seg = seaRoute(p, q, land); if (!seg) seg = seaRoute(p, q, land, 1.5);
+      if (land && !(bothVia && straight < 12)) { seg = await seaRoute(p, q, land); if (!seg) seg = await seaRoute(p, q, land, 1.5);
         if (seg && pathNm(seg) > Math.max(4 * straight, straight + 40)) seg = null; }
       out.push(...(seg ? seg.slice(1) : [q]));
     }
@@ -2179,18 +2236,29 @@
   const lerp = (a, b, t) => ({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
   const alongPath = (pts, f) => { const tot = pathNm(pts); let d = Math.max(0, Math.min(1, f)) * tot;
     for (let k = 1; k < pts.length; k++) { const s = nmBetween(pts[k - 1], pts[k]); if (d <= s) return lerp(pts[k - 1], pts[k], s ? d / s : 0); d -= s; } return pts[pts.length - 1]; };
-  const routeKey = (a, b, via) => [a.lat, a.lng, b.lat, b.lng].map(r4).join(',') + '|' + JSON.stringify((via || []).map(v => v.map(r4)));
+  const routeKey = (a, b, via) => 'v2|' + [a.lat, a.lng, b.lat, b.lng].map(r4).join(',') + '|' + JSON.stringify((via || []).map(v => v.map(r4)));
   // Calcule (et met en cache dans le programme) les routes maritimes manquantes ; renvoie true si quelque chose a changé
   async function computeSeaRoutes(c, p, onStatus) {
     const { nodes } = planNodes(c, p); const todo = [];
     for (let k = 1; k < nodes.length; k++) { const a = nodes[k - 1], b = nodes[k];
       if (a.lat == null || b.lat == null || !b.row || !(b.row.dist > 0)) continue;
       const leg = p.legs[b.row.i], key = routeKey(a, b, leg.via); if (!leg.route || leg.route.k !== key) todo.push({ a, b, leg, key }); }
-    if (!todo.length) return false;
+    // escales trouvées automatiquement (centre-ville…) : ramenées sur l'eau la plus proche, une fois
+    const toSnap = nodes.filter(n => { const leg = p.legs[n.legIndex]; return n.lat != null && !n.inherited && (n.kind === 'from' ? leg.from_lat != null && !leg.from_fixed : leg.to_lat != null && !leg.to_fixed); });
+    if (!todo.length && !toSnap.length) return false;
     onStatus?.('Calcul des routes maritimes…');
     const land = await loadLand();
-    for (const x of todo) { await new Promise(r => setTimeout(r, 0));
-      const pts = legRoutePoints({ lat: x.a.lat, lng: x.a.lng }, { lat: x.b.lat, lng: x.b.lng }, x.leg.via, land);
+    let snapped = false;
+    for (const n of toSnap) { const leg = p.legs[n.legIndex], q = await snapToSea({ lat: n.lat, lng: n.lng }, land);
+      if (n.kind === 'from') { leg.from_lat = q.lat; leg.from_lng = q.lng; leg.from_fixed = true; } else { leg.to_lat = q.lat; leg.to_lng = q.lng; leg.to_fixed = true; }
+      // les jours « à quai » suivants héritent de la même escale
+      if (q.lat !== n.lat || q.lng !== n.lng) snapped = true; }
+    if (snapped || toSnap.length) { todo.length = 0; const re = planNodes(c, p).nodes;
+      for (let k = 1; k < re.length; k++) { const a2 = re[k - 1], b2 = re[k]; if (a2.lat == null || b2.lat == null || !b2.row || !(b2.row.dist > 0)) continue;
+        const leg = p.legs[b2.row.i], key = routeKey(a2, b2, leg.via); if (!leg.route || leg.route.k !== key) todo.push({ a: a2, b: b2, leg, key }); } }
+    let k2 = 0;
+    for (const x of todo) { onStatus?.(`Calcul des routes maritimes… ${++k2}/${todo.length}`); await new Promise(r => setTimeout(r, 0));
+      const pts = await legRoutePoints({ lat: x.a.lat, lng: x.a.lng }, { lat: x.b.lat, lng: x.b.lng }, x.leg.via, land);
       x.leg.route = { k: x.key, pts: pts.map(q => [r4(q.lat), r4(q.lng)]) }; }
     return true;
   }
@@ -2368,7 +2436,7 @@
     $$('[data-place-node]').forEach(b => b.addEventListener('click', () => { PLACING = b.dataset.placeNode; $$('[data-place-node]').forEach(x => x.classList.toggle('on', x === b)); toast(`Cliquez sur la carte pour placer « ${b.textContent} »`); }));
     const setNode = async (legIndex, kind, ll) => {
       const q = getPlan(c), leg = q.legs[legIndex]; if (!leg) return;
-      if (kind === 'from') { leg.from_lat = r6(ll.lat); leg.from_lng = r6(ll.lng); } else { leg.to_lat = r6(ll.lat); leg.to_lng = r6(ll.lng); }
+      if (kind === 'from') { leg.from_lat = r6(ll.lat); leg.from_lng = r6(ll.lng); leg.from_fixed = true; } else { leg.to_lat = r6(ll.lat); leg.to_lng = r6(ll.lng); leg.to_fixed = true; }
       try { await savePlan(c, q); notifyCharter(c.id); route(); } catch (e) { toast(errMsg(e), 'err'); }
     };
     const saveVia = async (fn) => { const q = getPlan(c); fn(q); try { await savePlan(c, q); notifyCharter(c.id); route(); } catch (e) { toast(errMsg(e), 'err'); } };
@@ -2376,7 +2444,7 @@
       try { if (await computeSeaRoutes(c, p, msg => { el.innerHTML = `<div class="muted center small" style="padding:40px">${msg}</div>`; })) { await savePlan(c, p); notifyCharter(c.id); } }
       catch (e) { toast('Routes maritimes indisponibles (lignes droites) : ' + errMsg(e), 'err'); }
       const ctl = await mountRouteMap(el, c, p, { editable: true,
-        onAddVia: (s, ll) => saveVia(q => { const leg = q.legs[s.legIndex], via = (leg.via || []).slice(), pts = [s.a, ...via.map(([lat, lng]) => ({ lat, lng })), s.b];
+        onAddVia: (s, ll) => PLACING ? (() => { const [i, k] = PLACING.split(':'); PLACING = null; setNode(+i, k, ll); })() : saveVia(q => { const leg = q.legs[s.legIndex], via = (leg.via || []).slice(), pts = [s.a, ...via.map(([lat, lng]) => ({ lat, lng })), s.b];
           let best = 0, bestCost = Infinity; // insertion qui allonge le moins le trajet
           for (let k = 0; k < pts.length - 1; k++) { const cost = nmBetween(pts[k], ll) + nmBetween(ll, pts[k + 1]) - nmBetween(pts[k], pts[k + 1]); if (cost < bestCost) { bestCost = cost; best = k; } }
           via.splice(best, 0, [r6(ll.lat), r6(ll.lng)]); leg.via = via; }),
