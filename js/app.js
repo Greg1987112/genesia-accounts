@@ -103,6 +103,7 @@
       htChip: 'HT', apaLeft: 'Solde APA',
       boatInvoice: 'Facture', boatInvoicePending: 'Facture émise à la clôture',
       reportUnavailable: 'Ce rapport n’est pas disponible (compta non signée ou lien invalide).', preparingZip: 'Préparation du zip…',
+      boatPosition: 'Position du bateau', noLive: 'Position en direct non partagée pour le moment — position prévue selon le programme',
       windyTitle: 'Vent & mer en direct (Windy)', seeMarineTraffic: 'Voir le bateau sur MarineTraffic', liveNow: 'Position en direct du bateau',
       tabHome: 'Aujourd’hui', homeDay: 'Jour', homeOf: 'sur', programmeOfDay: 'Programme du jour', meals: 'Repas', lunch: 'Déjeuner', dinner: 'Dîner',
       captainNote: 'Le mot du capitaine', freeDay: 'Journée au mouillage / à quai — profitez !', wxTitle: 'Météo', wxWind: 'Vent', wxGust: 'rafales', wxSea: 'Mer', wxWaves: 'vagues',
@@ -147,6 +148,7 @@
       htChip: 'excl. VAT', apaLeft: 'APA left',
       boatInvoice: 'Invoice', boatInvoicePending: 'Invoice issued at closing',
       reportUnavailable: 'This report is not available (accounts not signed or invalid link).', preparingZip: 'Preparing zip…',
+      boatPosition: 'Yacht position', noLive: 'Live position not shared at the moment — planned position as per the programme',
       windyTitle: 'Live wind & sea (Windy)', seeMarineTraffic: 'See the yacht on MarineTraffic', liveNow: 'Live position of the yacht',
       tabHome: 'Today', homeDay: 'Day', homeOf: 'of', programmeOfDay: 'Today’s programme', meals: 'Meals', lunch: 'Lunch', dinner: 'Dinner',
       captainNote: 'Captain’s note', freeDay: 'Day at anchor / alongside — enjoy!', wxTitle: 'Weather', wxWind: 'Wind', wxGust: 'gusts', wxSea: 'Sea', wxWaves: 'waves',
@@ -500,6 +502,7 @@
   }
   const errMsg = e => {
     const m = (e && (e.message || e.error_description || e.details)) || String(e);
+    if (/boat_track/.test(m)) return `Base de données à mettre à jour : exécutez le fichier « maj-position.sql » dans Supabase (SQL Editor). (${m})`;
     const col = /(broker_fee_pct|auto_kind|auto_ref|'fee')/.exec(m);
     return col ? `Base de données à mettre à jour : exécutez le fichier « maj-frais.sql » dans Supabase (SQL Editor). (${m})` : m;
   };
@@ -1249,6 +1252,8 @@
           : `<p>${rows[0]?.trip ? `<b>${esc(rows[0].trip)}</b> — ` : ''}${t('freeDay')}</p>${rows.filter(r => r.remarks).map(r => `<p class="small">${esc(r.remarks)}</p>`).join('')}`}
         </section>
       </div>
+      ${d === localToday() ? `<section class="panel"><div class="panel-head"><h2>${t('boatPosition')}</h2><span class="small" id="live-line2">${liveLineHtml() || `<span class="muted">${t('noLive')}</span>`}</span></div>
+        <div class="route-map home-map" id="home-map"></div></section>` : ''}
       ${(() => { const pos = homeWindyPos(c, d); if (!pos) return '';
         const src = `https://embed.windy.com/embed2.html?lat=${pos.lat.toFixed(3)}&lon=${pos.lng.toFixed(3)}&detailLat=${pos.lat.toFixed(3)}&detailLon=${pos.lng.toFixed(3)}&width=650&height=380&zoom=9&level=surface&overlay=${WINDY_OVL}&product=ecmwf&menu=&message=true&marker=true&calendar=now&pressure=&type=map&location=coordinates&detail=&metricWind=kt&metricTemp=%C2%B0C&radarRange=-1`;
         return `<section class="panel"><div class="panel-head"><h2>${t('windyTitle')}</h2>
@@ -1265,7 +1270,15 @@
     const liveFix = () => { const l = (PLAN?.track || []).slice(-1)[0]; return l && (Date.now() / 1000 - l[2]) < 3 * 3600 ? { lat: l[0], lng: l[1], at: l[2] * 1000, sog: l[3] } : null; };
     function homeWindyPos(c, d) { const lv = d === localToday() ? liveFix() : null; return lv || dayPosition(c, PLAN, d); }
     function liveLineHtml() { const lv = liveFix(); return lv ? `<span class="live-dot"></span><b>${t('liveNow')}</b> · ${new Date(lv.at).toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit' })}${lv.sog != null ? ` · ${fmt(lv.sog, 1)} kn` : ''}` : ''; }
-    function updateLiveLine() { const el = $('#live-line'); if (el) el.innerHTML = liveLineHtml(); }
+    function updateLiveLine() { const el = $('#live-line'); if (el) el.innerHTML = liveLineHtml(); const el2 = $('#live-line2'); if (el2) el2.innerHTML = liveLineHtml() || `<span class="muted">${t('noLive')}</span>`; }
+    async function mountHomeMap(c) {
+      const el = $('#home-map'); if (!el) return;
+      try { const ctl = await mountRouteMap(el, c, PLAN, { labels: TX(), track: PLAN.track, fit: true }); CLIENT_CTL = ctl;
+        const td = localToday(), dr = ctl.P.rows.find(r => r.date === td && !r.alt);
+        if (dr) ctl.highlight(dr.day);
+        const now = ctl.plannedNow(); if (now) { ctl.setBoat(now.latlng); ctl.map.setView([now.latlng.lat, now.latlng.lng], Math.max(ctl.map.getZoom(), 10)); } }
+      catch (e) { el.innerHTML = `<div class="muted center small" style="padding:20px">${esc(errMsg(e))}</div>`; }
+    }
     async function loadHomeWeather(c) {
       const box = $('#home-wx'); if (!box) return;
       const d = curHomeDate(c), pos = dayPosition(c, PLAN, d);
@@ -1348,7 +1361,7 @@
         <footer class="foot muted small">${esc(c.yacht || YACHT)} · ${t('statement')} · ${new Date().toLocaleDateString(locale())}</footer>
       </main>`;
       if (PLAN && CTAB === 'itin') mountClientMap(c);
-      if (PLAN && CTAB === 'home') loadHomeWeather(c);
+      if (PLAN && CTAB === 'home') { loadHomeWeather(c); mountHomeMap(c); }
     }
 
     // Signature en 2 étapes : 1) tips  2) signature
@@ -1547,7 +1560,7 @@
       POS.last = { ...pt, acc: c.accuracy, at: now }; POS.err = null;
       const moved = POS.lastSent ? nmBetween(POS.lastSent, pt) : Infinity, age = POS.lastSent ? now - POS.lastSent.at : Infinity;
       if (age < 30000 || (age < 120000 && moved < 0.1)) return; // au plus toutes les 2 min, ou dès 200 m parcourus
-      if (c.accuracy && c.accuracy > 500) return;
+      if (c.accuracy && c.accuracy > 5000) return; // position trop imprécise
       try { await api.insert('boat_track', { lat: r6(c.latitude), lng: r6(c.longitude), sog: c.speed != null ? Math.round(c.speed * 1.94384 * 10) / 10 : null,
           cog: c.heading != null && !isNaN(c.heading) ? Math.round(c.heading) : null, acc: c.accuracy ? Math.round(c.accuracy) : null });
         POS.lastSent = { ...pt, at: now }; $('.pos-btn span') && ($('.pos-btn span').textContent = 'Position ' + new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })); }
@@ -1565,6 +1578,10 @@
       body: `<p>Votre iPhone envoie sa position GPS toutes les 2 minutes environ (ou dès 200 m parcourus). Pendant un charter, le client voit le bateau
         <b>en direct</b> sur sa carte et sur sa page du jour, avec le trajet réellement parcouru.</p>
         <p class="muted small">Sur iPhone, une page web ne peut pas envoyer sa position en arrière-plan : laissez l’app ouverte (iPhone ou iPad branché à la passerelle — l’écran reste allumé automatiquement). La position n’est visible par un client que pendant les dates de son charter.</p>
+        ${(() => { const td = localToday(), act = (S?.charters || []).filter(c => c.start_date && addDays(c.start_date, -1) <= td && addDays(c.end_date || c.start_date, 1) >= td);
+          const shared = act.filter(c => { const d = (S.charter_documents || []).find(x => x.charter_id === c.id && x.folder === 'itinerary_plan'); try { return d && JSON.parse(d.note).share_client; } catch { return false; } });
+          return act.length ? `<div class="banner ${shared.length ? 'banner-ok' : 'banner-gold'} small"><div>${shared.length ? `Visible en direct par le client de : <b>${shared.map(c => esc(c.title)).join(', ')}</b>` : `Charter en cours : <b>${act.map(c => esc(c.title)).join(', ')}</b> — cochez « Visible par le client » (Itinerary) pour que le client voie la position.`}</div></div>`
+            : `<div class="banner banner-gold small"><div>⚠ Aucun charter en cours aujourd’hui : la position est enregistrée mais <b>aucun client ne la voit</b> (visible seulement de la veille au lendemain des dates du charter).</div></div>`; })()}
         ${POS.on ? `<div class="kv"><span>État</span><b>${POS.err ? '⚠ ' + esc(POS.err) : 'Partage actif'}</b></div>
           <div class="kv"><span>Dernière position envoyée</span><b>${POS.lastSent ? new Date(POS.lastSent.at).toLocaleTimeString('fr-FR') : '—'}</b></div>
           ${POS.last ? `<div class="kv"><span>GPS</span><b>${POS.last.lat.toFixed(4)}, ${POS.last.lng.toFixed(4)} (±${Math.round(POS.last.acc || 0)} m)</b></div>` : ''}` : ''}`,

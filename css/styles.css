@@ -591,3 +591,5 @@ input[type=file] { padding: 7px; background: #fdfcf9; }
 .pd-meal-h span { color: var(--gold); font-weight: 700; margin-left: 4px; }
 .pd-meal ul { margin: 6px 0 0; padding-left: 18px; }
 @media (max-width: 760px) { .folder-tabs { grid-template-columns: repeat(4, 1fr); } .folder-tab b { font-size: .72rem; line-height: 1.15; } .folder-tab svg { width: 22px; height: 22px; } }
+.home-map { height: 300px; }
+@media (max-width: 760px) { .home-map { height: 260px; } }
