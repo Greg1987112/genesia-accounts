@@ -688,3 +688,4 @@ input[type=checkbox], input[type=radio] { accent-color: var(--gold); }
 .banner-gold { color: var(--ink-2); border-color: #4a3d22; }
 .banner-gold svg, .banner-gold b, .banner-gold strong { color: var(--gold); }
 @media (max-width: 760px) { .table-cards td { flex-wrap: wrap; } .table-cards td > * { max-width: 100%; } }
+.live-pin.stale span { background: #8a96a8; animation: none; }
